@@ -109,3 +109,15 @@ RFC 9110 §13.1.5 ordinarily allows `If-Range`: send the range if the strong val
 - [Microsoft NTFS change journal records](https://learn.microsoft.com/en-us/windows/win32/fileio/change-journal-records) — change detection is not byte reconstruction.
 - [Linux `statx(2)`](https://man7.org/linux/man-pages/man2/statx.2.html) — inode/mount metadata and limitations.
 - [Linux FUSE documentation](https://docs.kernel.org/filesystems/fuse/fuse.html) — userspace filesystem boundary.
+
+### Range gate prototype (source-only)
+
+The experimental `Sealed.OpenRange(expectedETag, offset, length)` rejects stale
+versions before checking range bounds and returns an exact bounded reader of
+already captured bytes. It accepts an empty read at EOF but rejects negative,
+overflowing, or out-of-bounds ranges. Concurrent readers have independent state.
+`Capture` also rejects a source reader that repeatedly returns `(0,nil)`
+instead of spinning indefinitely. Neither primitive authorizes a share, pins a
+real filesystem snapshot, enforces global memory budgets, cancels blocked
+readers, or serves HTTP. Every open/stream still needs a durable authorization
+and revocation fence before mount use. No native mount is enabled.

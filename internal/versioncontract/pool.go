@@ -137,7 +137,7 @@ func (s *Snapshot) OpenRange(expectedETag string, offset, length int64) (io.Read
 		return nil, err
 	}
 	s.readers++
-	return &poolReader{ReadCloser: r, snapshot: s}, nil
+	return &poolReader{inner: r, snapshot: s}, nil
 }
 
 func (s *Snapshot) retireLocked() {
@@ -161,20 +161,36 @@ func (s *Snapshot) Close() error {
 }
 
 type poolReader struct {
-	io.ReadCloser
+	inner    io.ReadCloser
 	snapshot *Snapshot
-	once     sync.Once
+	mu       sync.Mutex
+	closed   bool
 	closeErr error
 }
 
+// Read and Close serialize on this reader. Quota cannot be released while a
+// Read is still in progress; Close does not interrupt a blocked Read.
+func (r *poolReader) Read(p []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return 0, io.ErrClosedPipe
+	}
+	return r.inner.Read(p)
+}
+
 func (r *poolReader) Close() error {
-	r.once.Do(func() {
-		r.closeErr = r.ReadCloser.Close()
-		p := r.snapshot.pool
-		p.mu.Lock()
-		r.snapshot.readers--
-		r.snapshot.retireLocked()
-		p.mu.Unlock()
-	})
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return r.closeErr
+	}
+	r.closed = true
+	r.closeErr = r.inner.Close()
+	p := r.snapshot.pool
+	p.mu.Lock()
+	r.snapshot.readers--
+	r.snapshot.retireLocked()
+	p.mu.Unlock()
 	return r.closeErr
 }

@@ -141,6 +141,10 @@ func New(store *catalog.Store, tokens map[string]string, client *http.Client) ht
 		defer response.Body.Close()
 		if download {
 			requestedRange := request.Header.Get("Range")
+			if encoding := response.Header.Get("Content-Encoding"); encoding != "" && !strings.EqualFold(encoding, "identity") {
+				fail(w, http.StatusBadGateway, "unexpected_encoding", "peer returned a transformed file representation")
+				return
+			}
 			if (requestedRange == "" && response.StatusCode != http.StatusOK) ||
 				(requestedRange != "" && response.StatusCode != http.StatusPartialContent) {
 				fail(w, http.StatusBadGateway, "peer_error", fmt.Sprintf("peer returned unexpected HTTP %d", response.StatusCode))
@@ -162,7 +166,7 @@ func New(store *catalog.Store, tokens map[string]string, client *http.Client) ht
 			w.Header().Set("Content-Length", strconv.FormatInt(response.ContentLength, 10))
 			if response.StatusCode == http.StatusPartialContent {
 				contentRange := response.Header.Get("Content-Range")
-				if !strings.HasPrefix(contentRange, "bytes ") {
+				if !validSingleRangeResponse(requestedRange, contentRange, response.ContentLength) {
 					fail(w, http.StatusBadGateway, "invalid_range", "peer did not provide a valid range response")
 					return
 				}
@@ -190,6 +194,42 @@ func New(store *catalog.Store, tokens map[string]string, client *http.Client) ht
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(body)
 	})
+}
+
+// validSingleRangeResponse checks that a peer's 206 covers exactly the bytes
+// requested, with a coherent total and body length. It does not establish
+// cross-request file immutability; resumes need separate entity validators.
+func validSingleRangeResponse(requested, returned string, length int64) bool {
+	if length < 0 || !strings.HasPrefix(requested, "bytes=") || !strings.HasPrefix(returned, "bytes ") {
+		return false
+	}
+	rangePart, totalPart, ok := strings.Cut(strings.TrimPrefix(returned, "bytes "), "/")
+	if !ok || totalPart == "*" { return false }
+	startPart, endPart, ok := strings.Cut(rangePart, "-")
+	if !ok { return false }
+	start, errStart := strconv.ParseInt(startPart, 10, 64)
+	end, errEnd := strconv.ParseInt(endPart, 10, 64)
+	total, errTotal := strconv.ParseInt(totalPart, 10, 64)
+	if errStart != nil || errEnd != nil || errTotal != nil || total <= 0 || start < 0 || end < start || end >= total || length != end-start+1 {
+		return false
+	}
+	reqStartPart, reqEndPart, ok := strings.Cut(strings.TrimPrefix(requested, "bytes="), "-")
+	if !ok { return false }
+	if reqStartPart == "" {
+		suffix, err := strconv.ParseInt(reqEndPart, 10, 64)
+		if err != nil || suffix <= 0 { return false }
+		if suffix > total { suffix = total }
+		return start == total-suffix && end == total-1
+	}
+	reqStart, err := strconv.ParseInt(reqStartPart, 10, 64)
+	if err != nil || reqStart < 0 || reqStart >= total { return false }
+	expectedEnd := total-1
+	if reqEndPart != "" {
+		reqEnd, err := strconv.ParseInt(reqEndPart, 10, 64)
+		if err != nil || reqEnd < reqStart { return false }
+		if reqEnd < expectedEnd { expectedEnd = reqEnd }
+	}
+	return start == reqStart && end == expectedEnd
 }
 
 type hostView struct {

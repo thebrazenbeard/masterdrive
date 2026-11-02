@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -112,7 +113,11 @@ func TestGatewayAbortsTruncatedPeerDownload(t *testing.T) {
 	controller := httptest.NewServer(New(store, map[string]string{host.ID: "test-secret"}, nil))
 	defer controller.Close()
 	resp, err := http.Get(controller.URL + "/api/v1/hosts/" + host.ID + "/shares/docs/download?path=test.bin")
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		// net/http may abort before flushing buffered downstream headers.
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) { return }
+		t.Fatal(err)
+	}
 	defer resp.Body.Close()
 	body, readErr := io.ReadAll(resp.Body)
 	if readErr == nil {
@@ -146,4 +151,47 @@ func TestGatewayForwardsSingleByteRange(t *testing.T) {
 	if resp.StatusCode != http.StatusPartialContent || string(body) != "bcd" || resp.Header.Get("Content-Range") != "bytes 1-3/6" {
 		t.Fatalf("range status=%d bytes=%q content-range=%q", resp.StatusCode, body, resp.Header.Get("Content-Range"))
 	}
+}
+
+func TestSingleRangeValidation(t *testing.T) {
+	cases := []struct { request, response string; length int64; valid bool }{
+		{"bytes=1-3", "bytes 1-3/6", 3, true},
+		{"bytes=1-", "bytes 1-5/6", 5, true},
+		{"bytes=-2", "bytes 4-5/6", 2, true},
+		{"bytes=1-99", "bytes 1-5/6", 5, true},
+		{"bytes=1-3", "bytes 10-12/100", 3, false},
+		{"bytes=1-3", "bytes 1-3/6", 2, false},
+		{"bytes=1-3", "bytes 1-4/6", 4, false},
+		{"bytes=1-3", "bytes 1-3/*", 3, false},
+		{"bytes=-0", "bytes 0-5/6", 6, false},
+		{"bytes=6-7", "bytes 6-7/6", 2, false},
+	}
+	for _, tc := range cases {
+		if got := validSingleRangeResponse(tc.request, tc.response, tc.length); got != tc.valid {
+			t.Errorf("request=%q response=%q length=%d got=%t want=%t", tc.request, tc.response, tc.length, got, tc.valid)
+		}
+	}
+}
+
+func TestGatewayRejectsMismatchedPeerByteRange(t *testing.T) {
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "3")
+		w.Header().Set("Content-Range", "bytes 10-12/100")
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write([]byte("XYZ"))
+	}))
+	defer peer.Close()
+	store, err := catalog.Open(t.TempDir())
+	if err != nil { t.Fatal(err) }
+	host, err := store.Upsert("malformed-range", peer.URL)
+	if err != nil { t.Fatal(err) }
+	controller := httptest.NewServer(New(store, map[string]string{host.ID: "test-secret"}, nil))
+	defer controller.Close()
+	req, err := http.NewRequest(http.MethodGet, controller.URL+"/api/v1/hosts/"+host.ID+"/shares/docs/download?path=test.bin", nil)
+	if err != nil { t.Fatal(err) }
+	req.Header.Set("Range", "bytes=1-3")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil { t.Fatal(err) }
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway { t.Fatalf("mismatched peer range accepted: %d", resp.StatusCode) }
 }

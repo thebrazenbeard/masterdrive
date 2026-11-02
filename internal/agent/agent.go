@@ -170,6 +170,7 @@ func newHandler(exports []Export, grants []AccessGrant, legacyEmptyShares bool) 
 	s.mux = http.NewServeMux()
 	s.mux.HandleFunc("GET /v1/shares", s.getShares)
 	s.mux.HandleFunc("GET /v1/list", s.list)
+	s.mux.HandleFunc("GET /v1/search", s.search)
 	s.mux.HandleFunc("GET /v1/download", s.download)
 	return s, nil
 }

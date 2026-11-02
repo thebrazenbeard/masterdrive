@@ -63,6 +63,10 @@ func New(store *catalog.Store, tokens map[string]string, client *http.Client) ht
 			respond(w, http.StatusOK, map[string]string{"status": "ok", "mode": "controller"})
 			return
 		}
+		if r.URL.Path == "/api/v1/search" {
+			serveFederatedSearch(w, r, store, tokens, client)
+			return
+		}
 		const prefix = "/api/v1/hosts/"
 		if !strings.HasPrefix(r.URL.Path, prefix) {
 			fail(w, http.StatusNotFound, "not_found", "unknown endpoint")

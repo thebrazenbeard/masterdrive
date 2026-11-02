@@ -15,7 +15,7 @@ Native platform APIs are not semantically identical:
 
 The third Windows return value, `lpTotalNumberOfFreeBytes`, is raw volume free space, *not* how much this agent can allocate. It should not replace available-to-caller. Linux `Bfree` has a similar distinction. Different shares on the same backing volume can report identical totals and available bytes; **do not sum them into an aggregate pool**.
 
-Official references: [Linux statvfs(3)](https://man7.org/linux/man-pages/man3/statvfs.3.html), [Microsoft GetDiskFreeSpaceExW](https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-getdiskfreespaceexw), [Go 1.27 os.Root](https://pkg.go.dev/os@go1.27.3), [Go Windows syscall caveat](https://pkg.go.dev/syscall?GOOS=windows), [Go x/sys/windows](https://pkg.go.dev/golang.org/x/sys/windows).
+Official references: [Linux statfs/fstatfs(2)](https://man7.org/linux/man-pages/man2/statfs.2.html), [Linux statvfs(3)](https://man7.org/linux/man-pages/man3/statvfs.3.html), [Microsoft GetDiskFreeSpaceExW](https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-getdiskfreespaceexw), [Go 1.27 os.Root](https://pkg.go.dev/os@go1.27.3), [Go Windows syscall caveat](https://pkg.go.dev/syscall?GOOS=windows), [Go x/sys/windows](https://pkg.go.dev/golang.org/x/sys/windows).
 
 ## Proposed read-only v1 extension
 
@@ -41,8 +41,8 @@ Fields:
 - `status`: `measured`, `unavailable`, or `unsupported`. Only `measured` responses contain numeric fields; unavailable/unsupported values omit numbers rather than coercing to zero. A controller that has not queried a share displays **Not checked** instead of inventing its status.
 - `scope`: always `backing_filesystem` for this API. Never `share_quota`, `virtual_pool`, or `available_for_masterdrive_writes`.
 - `total_reported_bytes`, `available_reported_bytes`: unsigned **decimal strings**, not JSON numbers. This avoids JavaScript's 53-bit integer precision limit and allows `uint64` values to be represented exactly. Conversion from filesystem blocks must check multiplication overflow; impossible/ambiguous readings become `unavailable`.
-- `availability_semantics`: `unprivileged` on Linux; `caller_quota` on Windows. The label is essential when comparing hosts. Do not infer filesystem access to any other identity.
-- `measured_at`: UTC timestamp from the source host; not an assertion that the peer remains online or that the numbers remain accurate. Display age and an expiry badge, treating stale observations as stale rather than zero or healthy.
+- `availability_semantics`: `unprivileged` on Linux; `caller_available` on Windows (the caller may or may not have a quota). The label is essential when comparing hosts. Do not infer filesystem access to any other identity.
+- `measured_at`: UTC timestamp from the source host; not an assertion that the peer remains online or that the numbers remain accurate. Display age and an expiry badge, treating stale observations as stale rather than zero or healthy; account for source/controller clock skew before trusting a computed age.
 - `read_only_export`: always `true` in v0.1/G1; native free space does **not** confer a MasterDrive write permission.
 
 For `unavailable` or `unsupported`, include a coarse reason code such as `probe_failed` or `platform_not_supported` but **never** underlying directory paths or raw OS errors. A failed probe must not take down unrelated host/share listing.
@@ -55,8 +55,8 @@ The UI should show a host/share-specific card such as “200 GB reported availab
 
 ## Implementation plan (not completed)
 
-1. Add a narrowly scoped capacity probe interface under the existing agent handler. Keep the `os.Root` export pinning; on Linux prefer `fstatfs` of a directory opened using that root so a rename cannot redirect the metric. Handle file-descriptor lifetime and `uint64` overflow defensively.
-2. On Windows, use a reviewed pinned `golang.org/x/sys/windows` dependency (not an ad-hoc `syscall.NewLazyDLL` whose search behavior can create DLL preloading risk), document quota sensitivity, and test reparse replacement before any claim that the returned metric refers to the originally approved backing volume. If that guarantee cannot be established, report `unavailable` on changed paths rather than presenting a misleading value.
+1. Add a narrowly scoped capacity probe interface under the existing agent handler. Keep the `os.Root` export pinning; on Linux prefer `fstatfs` of a directory opened using that root so a rename cannot redirect the metric. Require a positive `f_frsize` fragment size; do **not** substitute `f_bsize` (optimal transfer size) to fabricate capacity. Handle file-descriptor lifetime and `uint64` overflow defensively.
+2. On Windows, use a reviewed pinned `golang.org/x/sys/windows` dependency (not an ad-hoc `syscall.NewLazyDLL` whose search behavior can create DLL preloading risk), document quota sensitivity, and test reparse replacement before any claim that the returned metric refers to the originally approved backing volume. Handle UNC directory inputs with the required trailing backslash and verify the calling account has applicable directory access. A path-based API does not automatically inherit the pinned-handle guarantee of `os.Root`; if that guarantee cannot be established, report `unavailable` on changed paths rather than a misleading value.
 3. Add authentication and unknown-share tests plus platform-native temporary-volume tests. Probe errors, unmounted shares, directory renames, junction/bind-mount changes, network shares and quota-limited users must fail visibly without exposing paths.
 4. Add the controller proxy and UI only after agent tests. Keep transport availability, capacity freshness, and share authorization as **three distinct states**. Avoid a global “total free” banner.
 5. Qualify on real Windows/Linux hosts with timestamps, current code revision, expected filesystem/identity, exact API outputs and permission policies **without logging tokens or exporting personal drives**.

@@ -22,7 +22,7 @@ const folder = (host, share) => `/api/v1/hosts/${segment(host)}/shares/${segment
 
 export function hostsUrl() { return '/api/v1/hosts'; }
 export function sharesUrl(host) { return `/api/v1/hosts/${segment(host)}/shares`; }
-export function entriesUrl(host, share, path = '') { return `${folder(host, share)}/entries?${new URLSearchParams({path})}`; }
+export function entriesUrl(host, share, path = '', offset = 0, limit = 100) { return `${folder(host, share)}/entries?${new URLSearchParams({path, offset:String(offset), limit:String(limit)})}`; }
 export function downloadUrl(host, share, path) { return `${folder(host, share)}/download?${new URLSearchParams({path})}`; }
 
 export function readableSize(value) {

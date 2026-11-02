@@ -83,6 +83,47 @@ func TestRefusesCorruptStateWithoutErasingIt(t *testing.T) {
 	if string(got) != string(bad) { t.Fatal("corrupt file was silently changed") }
 }
 
+func TestReloadObservesSeparateProcessWrites(t *testing.T) {
+	dir := t.TempDir()
+	controller, err := Open(dir)
+	if err != nil { t.Fatal(err) }
+	if err := controller.Reload(); err != nil { t.Fatalf("empty new catalog should reload: %v", err) }
+	cli, err := Open(dir)
+	if err != nil { t.Fatal(err) }
+	h, err := cli.Upsert("Peer", "https://peer.example")
+	if err != nil { t.Fatal(err) }
+	if len(controller.List()) != 0 { t.Fatal("controller snapshot changed without reload") }
+	if err := controller.Reload(); err != nil { t.Fatal(err) }
+	if got, ok := controller.Get(h.ID); !ok || got.Name != "Peer" { t.Fatalf("controller missed CLI registration: %+v, %t", got, ok) }
+	if err := cli.Remove(h.ID); err != nil { t.Fatal(err) }
+	if err := controller.Reload(); err != nil { t.Fatal(err) }
+	if got := controller.List(); len(got) != 0 { t.Fatalf("controller missed CLI removal: %+v", got) }
+}
+
+func TestReloadRejectsCorruptDiskAndPreservesLastSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	writer, err := Open(dir)
+	if err != nil { t.Fatal(err) }
+	h, err := writer.Upsert("Peer", "https://peer.example")
+	if err != nil { t.Fatal(err) }
+	controller, err := Open(dir)
+	if err != nil { t.Fatal(err) }
+	path := filepath.Join(dir, "hosts.json")
+	badStates := [][]byte{
+		[]byte(`{"version":2,"hosts":[]}`),
+		[]byte(`{"version":1,"hosts":[{"id":"forged"}]}`),
+		[]byte(`not-json`),
+	}
+	for _, bad := range badStates {
+		if err := os.WriteFile(path, bad, 0600); err != nil { t.Fatal(err) }
+		if err := controller.Reload(); err == nil { t.Fatalf("accepted bad state: %s", bad) }
+		if got, ok := controller.Get(h.ID); !ok || got.Name != "Peer" { t.Fatalf("corrupt disk clobbered last good snapshot: %+v, %t", got, ok) }
+	}
+	if err := os.Remove(path); err != nil { t.Fatal(err) }
+	if err := controller.Reload(); err == nil { t.Fatal("missing established disk state must fail") }
+	if _, ok := controller.Get(h.ID); !ok { t.Fatal("missing file clobbered state") }
+}
+
 func TestCatalogHasNoCredentialField(t *testing.T) {
 	dir := t.TempDir()
 	s, err := Open(dir)

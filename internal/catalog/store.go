@@ -75,10 +75,46 @@ func Open(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, fmt.Errorf("catalog: create directory: %w", err)
 	}
-	s := &Store{path: filepath.Join(dir, "hosts.json"), hosts: make(map[string]Host)}
-	f, err := os.Open(s.path)
+	s := &Store{path: filepath.Join(dir, "hosts.json")}
+	hosts, err := readHosts(s.path, true)
+	if err != nil {
+		return nil, err
+	}
+	s.hosts = hosts
+	return s, nil
+}
+
+// Reload atomically replaces the in-memory snapshot with a validated disk
+// snapshot. It is intended for a long-lived read-only controller observing
+// edits by a separate CLI process. A malformed, missing or oversized file
+// leaves the last valid in-memory state untouched. The caller should surface
+// that error rather than silently reporting stale contents as current.
+//
+// Reload does not make concurrent writers safe: exactly one process should
+// own catalog mutations. Readers may safely Reload during atomic replacement.
+func (s *Store) Reload() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	hosts, err := readHosts(s.path, false)
+	if errors.Is(err, os.ErrNotExist) && len(s.hosts) == 0 {
+		// A fresh catalog has no file until the first registration.
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	s.hosts = hosts
+	return nil
+}
+
+func readHosts(path string, allowMissing bool) (map[string]Host, error) {
+	hosts := make(map[string]Host)
+	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return s, nil
+		if allowMissing {
+			return hosts, nil
+		}
+		return nil, fmt.Errorf("catalog: missing state file: %w", err)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("catalog: open: %w", err)
@@ -106,12 +142,12 @@ func Open(dir string) (*Store, error) {
 		if err != nil || h.BaseURL != canonical || h.ID != id || !validHealth(h.Health) || h.AddedAt.IsZero() || (h.LastCheckedAt != nil && h.LastCheckedAt.IsZero()) {
 			return nil, fmt.Errorf("catalog: invalid stored host %q", h.ID)
 		}
-		if _, exists := s.hosts[id]; exists {
+		if _, exists := hosts[id]; exists {
 			return nil, fmt.Errorf("catalog: duplicate stored host %q", h.ID)
 		}
-		s.hosts[id] = h
+		hosts[id] = h
 	}
-	return s, nil
+	return hosts, nil
 }
 
 // Upsert registers or renames a host chosen explicitly by the caller. The ID

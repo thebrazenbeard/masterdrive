@@ -65,6 +65,28 @@ func TestControllerRejectsUnregisteredAndMissingCredential(t *testing.T) {
 	if writes.Code != http.StatusMethodNotAllowed { t.Fatalf("mutation status=%d", writes.Code) }
 }
 
+func TestControllerReloadsExternalCLIChanges(t *testing.T) {
+	dir := t.TempDir()
+	controllerStore, err := catalog.Open(dir)
+	if err != nil { t.Fatal(err) }
+	cliStore, err := catalog.Open(dir)
+	if err != nil { t.Fatal(err) }
+	api := New(controllerStore, nil, nil)
+	host, err := cliStore.Upsert("external-device", "https://approved.example")
+	if err != nil { t.Fatal(err) }
+	list := httptest.NewRecorder()
+	api.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/api/v1/hosts", nil))
+	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), host.ID) {
+		t.Fatalf("newly added host hidden until restart: %d %s", list.Code, list.Body.String())
+	}
+	if err := cliStore.Remove(host.ID); err != nil { t.Fatal(err) }
+	removed := httptest.NewRecorder()
+	api.ServeHTTP(removed, httptest.NewRequest(http.MethodGet, "/api/v1/hosts", nil))
+	if removed.Code != http.StatusOK || strings.Contains(removed.Body.String(), host.ID) {
+		t.Fatalf("removed host remained visible: %d %s", removed.Code, removed.Body.String())
+	}
+}
+
 func TestLocalBindAndDNSRebindingGuard(t *testing.T) {
 	for _, address := range []string{"127.0.0.1:8788", "[::1]:8788", "localhost:8788"} {
 		if err := ValidateLoopbackListen(address); err != nil { t.Errorf("%s rejected: %v", address, err) }
@@ -194,4 +216,11 @@ func TestGatewayRejectsMismatchedPeerByteRange(t *testing.T) {
 	if err != nil { t.Fatal(err) }
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadGateway { t.Fatalf("mismatched peer range accepted: %d", resp.StatusCode) }
+	if resp.Header.Get("Content-Disposition") != "" || !strings.HasPrefix(resp.Header.Get("Content-Type"), "application/json") {
+		t.Fatalf("range rejection leaked attachment headers: %+v", resp.Header)
+	}
+	var responseBody map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&responseBody); err != nil {
+		t.Fatalf("gateway rejection must be valid JSON: %v", err)
+	}
 }

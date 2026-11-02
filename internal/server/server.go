@@ -44,6 +44,12 @@ func New(store *catalog.Store, tokens map[string]string, client *http.Client) ht
 			fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "read-only API")
 			return
 		}
+		// CLI host add/remove runs as a separate process. Never serve a stale
+		// in-memory catalog after an external update or damaged state file.
+		if err := store.Reload(); err != nil {
+			fail(w, http.StatusServiceUnavailable, "catalog_unavailable", "host registry could not be refreshed")
+			return
+		}
 		if r.URL.Path == "/api/v1/hosts" {
 			hosts := store.List()
 			views := make([]hostView, 0, len(hosts))
@@ -161,15 +167,18 @@ func New(store *catalog.Store, tokens map[string]string, client *http.Client) ht
 				fail(w, http.StatusBadRequest, "bad_path", "a file path is required")
 				return
 			}
-			w.Header().Set("Content-Type", "application/octet-stream")
-			w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": filename}))
-			w.Header().Set("Content-Length", strconv.FormatInt(response.ContentLength, 10))
+			var contentRange string
 			if response.StatusCode == http.StatusPartialContent {
-				contentRange := response.Header.Get("Content-Range")
+				contentRange = response.Header.Get("Content-Range")
 				if !validSingleRangeResponse(requestedRange, contentRange, response.ContentLength) {
 					fail(w, http.StatusBadGateway, "invalid_range", "peer did not provide a valid range response")
 					return
 				}
+			}
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": filename}))
+			w.Header().Set("Content-Length", strconv.FormatInt(response.ContentLength, 10))
+			if contentRange != "" {
 				w.Header().Set("Content-Range", contentRange)
 			}
 			w.Header().Set("Accept-Ranges", "bytes")

@@ -2,7 +2,7 @@ import {safeName, appendPath, parentPath, folderCrumbs, hostsUrl, sharesUrl, ent
 
 const el = id => document.getElementById(id);
 const ui = Object.fromEntries(['host-list','share-list','host-count','share-count','mesh-summary','location-title','location-subtitle','breadcrumbs','file-list','filter','refresh','item-count'].map(id => [id, el(id)]));
-const state = {hosts: [], shares: [], entries: [], host: null, share: null, path: '', loading: false, error: '', query: ''};
+const state = {hosts: [], shares: [], entries: [], host: null, share: null, path: '', loading: false, loadingMore: false, nextOffset: null, error: '', query: ''};
 let generation = 0;
 let sessionToken = null;
 const collator = new Intl.Collator(undefined, {numeric:true, sensitivity:'base'});
@@ -14,15 +14,23 @@ function node(tag, className, text) {
   return item;
 }
 
-function apiError(response) {
-  if (response.status === 401 || response.status === 403) return 'Access denied. Open the session link from your MasterDrive controller.';
+function apiError(response, payload) {
+  const code = payload?.error?.code || payload?.code || payload?.error_code;
+  if (response.status === 401 || code === 'session_invalid' || code === 'session_required') return 'Access denied. Open the session link from your MasterDrive controller.';
+  if (response.status === 403 && code === 'peer_token_missing') return 'This device needs a peer credential configured on the controller before its files can be accessed.';
+  if (response.status === 403) return 'This device denied access. Check its pairing, credentials, and share permissions.';
   if (response.status === 404) return 'This drive or folder is no longer available.';
+  if (response.status === 502 || response.status === 503 || response.status === 504) return 'The selected device is unavailable. Check its connection to the mesh.';
   return `The mesh request failed (HTTP ${response.status}).`;
 }
 
 async function json(url, options = {}) {
   const response = await fetch(url, {credentials:'same-origin', cache:'no-store', ...options});
-  if (!response.ok) throw new Error(apiError(response));
+  if (!response.ok) {
+    let payload;
+    try { payload = await response.json(); } catch { /* A proxy or a device may return non-JSON errors. */ }
+    throw new Error(apiError(response, payload));
+  }
   return response.json();
 }
 
@@ -136,7 +144,7 @@ function renderFiles() {
   if (!state.share) { empty(state.host ? 'Choose a shared drive' : 'Every drive. One destination.', state.host ? 'Select a drive in the sidebar.' : 'Choose a device from the left to see its shared storage.'); ui['item-count'].textContent = 'No folder selected'; return; }
   const filtered = state.entries.filter(entry => String(entry.name || '').toLocaleLowerCase().includes(state.query.toLocaleLowerCase()));
   filtered.sort((a,b) => Number(isFolder(b)) - Number(isFolder(a)) || collator.compare(a.name, b.name));
-  if (!filtered.length) { empty(state.query ? 'No matching files' : 'This folder is empty', state.query ? 'Try a different search in this folder.' : 'There is nothing here yet.', state.query ? '⌕' : '∅'); ui['item-count'].textContent = `${state.entries.length} items`; return; }
+  if (!filtered.length && state.nextOffset === null) { empty(state.query ? 'No matching files' : 'This folder is empty', state.query ? 'Try a different search in this folder.' : 'There is nothing here yet.', state.query ? '⌕' : '∅'); ui['item-count'].textContent = `${state.entries.length} items`; return; }
   list.replaceChildren();
   for (const entry of filtered) {
     if (!safeName(entry?.name)) continue;
@@ -147,7 +155,7 @@ function renderFiles() {
     icon.setAttribute('aria-hidden', 'true');
     const link = isFolder(entry) ? node('button', 'file-link', entry.name) : node('a', 'file-link', entry.name);
     if (isFolder(entry)) { link.type = 'button'; link.addEventListener('click', () => openPath(path)); }
-    else { link.href = downloadUrl(state.host.id, state.share.id, path); link.setAttribute('download', entry.name); link.title = `Download ${entry.name}`; }
+    else { link.href = downloadUrl(state.host.id, state.share.id, path); link.target = '_blank'; link.rel = 'noopener'; link.title = `Download ${entry.name}`; }
     title.append(icon, link);
     row.append(title, node('span', 'file-meta', isFolder(entry) ? 'Folder' : readableSize(entry.size)), node('span', 'file-meta', readableDate(entry.modified_at)));
     const action = node('span', 'file-action', isFolder(entry) ? '›' : '↓');
@@ -155,11 +163,21 @@ function renderFiles() {
     row.append(action);
     list.append(row);
   }
-  ui['item-count'].textContent = `${filtered.length} of ${state.entries.length} items`;
+  if (state.nextOffset !== null) {
+    const row = node('div', 'file-row');
+    const button = node('button', 'secondary-button', state.loadingMore ? 'Loading more…' : 'Load more files');
+    button.type = 'button';
+    button.disabled = state.loadingMore;
+    button.style.gridColumn = '1 / -1';
+    button.addEventListener('click', loadMore);
+    row.append(button); list.append(row);
+  }
+  ui['item-count'].textContent = `${filtered.length} matching · ${state.entries.length} loaded${state.nextOffset !== null ? ' · more available' : ''}`;
 }
 
 async function loadHosts() {
   const sequence = ++generation;
+  const previous = {hostId: state.host?.id, shareId: state.share?.id, path: state.path};
   state.error = '';
   state.loading = true;
   renderFiles();
@@ -167,10 +185,9 @@ async function loadHosts() {
     const payload = await json(hostsUrl());
     if (sequence !== generation) return;
     state.hosts = Array.isArray(payload.hosts) ? payload.hosts.filter(h => h && typeof h.id === 'string') : [];
-    const oldHost = state.host?.id;
-    state.host = state.hosts.find(h => h.id === oldHost) || null;
+    state.host = state.hosts.find(h => h.id === previous.hostId) || null;
     renderHosts();
-    if (state.host) await chooseHost(state.host);
+    if (state.host) await chooseHost(state.host, previous.shareId, previous.path);
     else if (state.hosts.length) await chooseHost(state.hosts[0]);
     else { state.share = null; state.shares = []; state.entries = []; state.loading = false; renderShares(); renderFiles(); }
   } catch (error) {
@@ -180,10 +197,11 @@ async function loadHosts() {
   }
 }
 
-async function chooseHost(host) {
+async function chooseHost(host, retainedShareId = null, retainedPath = '') {
   const sequence = ++generation;
-  const previouslySelected = state.host?.id === host.id ? state.share?.id : null;
+  const previouslySelected = retainedShareId;
   state.host = host; state.share = null; state.path = ''; state.entries = []; state.shares = [];
+  state.nextOffset = null; state.loadingMore = false;
   state.loading = true; state.error = '';
   renderHosts(); renderShares(); renderFiles();
   try {
@@ -193,31 +211,52 @@ async function chooseHost(host) {
     state.loading = false;
     renderShares(); renderFiles();
     const share = state.shares.find(s => s.id === previouslySelected);
-    if (share) await chooseShare(share);
+    if (share) await chooseShare(share, retainedPath);
   } catch (error) {
     if (sequence !== generation) return;
     state.loading = false; state.error = error.message || 'Host unavailable'; renderShares(); renderFiles();
   }
 }
 
-function chooseShare(share) {
+function chooseShare(share, path = '') {
   state.share = share; state.path = ''; state.entries = []; state.query = ''; ui.filter.value = '';
-  renderShares(); return openPath('');
+  state.nextOffset = null; state.loadingMore = false;
+  renderShares(); return openPath(path);
 }
 
 async function openPath(path) {
   if (!state.host || !state.share) return;
   const sequence = ++generation;
-  state.path = path; state.loading = true; state.error = '';
+  state.path = path; state.entries = []; state.nextOffset = null; state.loadingMore = false; state.loading = true; state.error = '';
   renderFiles();
   try {
-    const payload = await json(entriesUrl(state.host.id, state.share.id, path));
+    const payload = await json(entriesUrl(state.host.id, state.share.id, path, 0, 100));
     if (sequence !== generation) return;
     state.entries = Array.isArray(payload.entries) ? payload.entries : [];
+    state.nextOffset = Number.isSafeInteger(payload.next_offset) && payload.next_offset > 0 ? payload.next_offset : null;
     state.loading = false; renderFiles();
   } catch (error) {
     if (sequence !== generation) return;
     state.loading = false; state.error = error.message || 'Folder unavailable'; renderFiles();
+  }
+}
+
+async function loadMore() {
+  if (!state.host || !state.share || state.loading || state.loadingMore || state.nextOffset === null) return;
+  const sequence = generation;
+  const offset = state.nextOffset;
+  state.loadingMore = true;
+  renderFiles();
+  try {
+    const payload = await json(entriesUrl(state.host.id, state.share.id, state.path, offset, 100));
+    if (sequence !== generation) return;
+    state.entries.push(...(Array.isArray(payload.entries) ? payload.entries : []));
+    state.nextOffset = Number.isSafeInteger(payload.next_offset) && payload.next_offset > offset ? payload.next_offset : null;
+  } catch (error) {
+    if (sequence !== generation) return;
+    state.error = error.message || 'Could not load more files';
+  } finally {
+    if (sequence === generation) { state.loadingMore = false; renderFiles(); }
   }
 }
 
@@ -226,8 +265,7 @@ ui.refresh.addEventListener('click', async () => {
   if (sessionToken) {
     try { await bootstrapSession(); } catch (error) { state.error = error.message; renderFiles(); return; }
   }
-  if (state.share) await openPath(state.path);
-  else await loadHosts();
+  await loadHosts();
 });
 
 try { await bootstrapSession(); await loadHosts(); }

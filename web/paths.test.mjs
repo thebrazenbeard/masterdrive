@@ -20,7 +20,8 @@ test('untrusted entry names cannot construct traversal paths', () => {
 
 test('each URL segment and query parameter is separately encoded', () => {
   assert.equal(sharesUrl('host/one'), '/api/v1/hosts/host%2Fone/shares');
-  assert.equal(entriesUrl('a b', 'disk#1', 'docs/report & notes.txt'), '/api/v1/hosts/a%20b/shares/disk%231/entries?path=docs%2Freport+%26+notes.txt');
+  assert.equal(entriesUrl('a b', 'disk#1', 'docs/report & notes.txt'), '/api/v1/hosts/a%20b/shares/disk%231/entries?path=docs%2Freport+%26+notes.txt&offset=0&limit=100');
+  assert.equal(entriesUrl('a', 'b', '', 100, 50), '/api/v1/hosts/a/shares/b/entries?path=&offset=100&limit=50');
   assert.equal(downloadUrl('a', 'b', 'x?y#z'), '/api/v1/hosts/a/shares/b/download?path=x%3Fy%23z');
 });
 

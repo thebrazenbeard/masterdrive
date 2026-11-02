@@ -86,6 +86,11 @@ func New(store *catalog.Store, tokens map[string]string, client *http.Client) ht
 			peerPath = "/v1/list"
 			query.Set("share", segments[2])
 			query.Set("path", r.URL.Query().Get("path"))
+			for _, key := range []string{"limit", "offset"} {
+				if value := r.URL.Query().Get(key); value != "" {
+					query.Set(key, value)
+				}
+			}
 		case len(segments) == 4 && segments[1] == "shares" && segments[2] != "" && segments[3] == "download":
 			peerPath = "/v1/download"
 			query.Set("share", segments[2])

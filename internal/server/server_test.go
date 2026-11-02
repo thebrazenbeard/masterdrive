@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/thebrazenbeard/masterdrive/internal/catalog"
@@ -78,9 +79,9 @@ func TestLocalBindAndDNSRebindingGuard(t *testing.T) {
 }
 
 func TestDefaultPeerClientDoesNotFollowRedirect(t *testing.T) {
-	received := false
+	var received atomic.Bool
 	sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		received = true
+		received.Store(true)
 	}))
 	defer sink.Close()
 	redirect := httptest.NewServer(http.RedirectHandler(sink.URL, http.StatusFound))
@@ -92,5 +93,5 @@ func TestDefaultPeerClientDoesNotFollowRedirect(t *testing.T) {
 	api := New(store, map[string]string{host.ID: "private-token"}, nil)
 	w := httptest.NewRecorder()
 	api.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/hosts/"+host.ID+"/shares", nil))
-	if w.Code != http.StatusBadGateway || received { t.Fatalf("redirect followed=%v, status=%d", received, w.Code) }
+	if w.Code != http.StatusBadGateway || received.Load() { t.Fatalf("redirect followed=%v, status=%d", received.Load(), w.Code) }
 }

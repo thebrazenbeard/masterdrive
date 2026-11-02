@@ -200,7 +200,7 @@ func TestPropfindChildValidationAndSourceFailure(t *testing.T) {
 		{"unicode policy pending",func(b *testBackend){b.children[0].Name="café.txt"},http.StatusBadGateway},
 		{"file modtime missing",func(b *testBackend){b.children[0].ModifiedAt=time.Time{}},http.StatusBadGateway},
 		{"unversioned child",func(b *testBackend){b.children[0].StrongETag=""},http.StatusBadGateway},
-		{"case collision",func(b *testBackend){b.children=append(b.children,Metadata{Name:"SONG.TXT",Size:6,StrongETag:`"version-2"`})},http.StatusConflict},
+		{"case collision",func(b *testBackend){b.children=append(b.children,Metadata{Name:"SONG.TXT",Size:6,ModifiedAt:b.children[0].ModifiedAt,StrongETag:`"version-2"`})},http.StatusConflict},
 	} {
 		t.Run(tc.name,func(t *testing.T){
 			b:=fixture();tc.configure(b)

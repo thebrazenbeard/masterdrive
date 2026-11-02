@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -105,7 +106,7 @@ func TestConcurrentUpdatesKeepEveryHost(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, err := s.Upsert("host", "https://node"+string(rune('a'+i))+".example")
+			_, err := s.Upsert("host", fmt.Sprintf("https://node%d.example", i))
 			errCh <- err
 		}(i)
 	}

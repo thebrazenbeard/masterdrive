@@ -17,7 +17,7 @@ The read-only handler covers `OPTIONS`, finite-depth `PROPFIND` (explicit 0/1 on
 The `Backend` contract requires:
 
 - `Stat(ctx, key)` with stable metadata, the exact final name represented by the requested virtual path (share ID at the root), and a **source-issued strong ETag** for every file. A mismatched returned name fails closed instead of silently aliasing another path.
-- `Children(ctx, key)` with deterministic complete snapshot children for a directory (bounded here to 200); if a snapshot is unavailable or exceeds the limit, return an explicit failure, never a partial `207` listing pretending to be complete.
+- `Children(ctx, key, limit)` with an explicitly bounded snapshot cursor and return values `(entries, complete, err)`. The handler requests **at most 200 entries**, rejects `complete=false` and refuses any backend response exceeding the supplied limit. The backend **must not** read and allocate every child before applying the limit; it must use a streaming or paginated cursor, examining at most `limit + 1` entries to determine completeness. An incomplete result cannot become a successful `207` listing. This source-only interface requirement is **not proof** that a future adapter honors its memory limit; an actual adapter needs limit-enforcement and memory-budget tests.
 - `OpenSnapshot(ctx, key, expectedETag)` returning immutable seekable bytes pinned to exactly that version until close, or an explicit stale/offline error. `mtime + size` is not a substitute for strong file identity.
 
 `GET` and `HEAD` use a source-issued strong ETag and a version-pinned read handle. HTTP single ranges are delegated to Go's standard `http.ServeContent` only after the immutable handle's length is verified against metadata. Multi-ranges and date-form `If-Range` are rejected rather than silently changing representation. A missing source version, stale handle, source offline, or inconsistent body length fails closed.
@@ -28,7 +28,7 @@ The `Backend` contract requires:
 - The handler does not implement WebDAV locking, shared/exclusive caches, resumable multi-operation directory snapshots, FUSE inode handles, WinFsp file IDs, or live revocation teardown.
 - The handler does not create an `http.Server`, protect its Unix socket/named pipe, ensure the operating-system transport peer is the same user, or enforce timeouts. The embedding process must enforce those separately.
 - No buffering to local disk is implemented. A client (including rclone VFS, Explorer indexing, or OS page cache) may cache file content independently; eviction and revocation are unqualified.
-- A `207` response with 200 children is complete **only if the backend's snapshot contract is true**. A real remote paginated listing cannot be wrapped directly without version/cursor semantics.
+- A `207` response with 200 children is complete **only if the backend's snapshot contract is true and it explicitly returns `complete=true`**. A remote paginated listing cannot be wrapped directly without version/cursor semantics. A backend ignoring the requested limit is rejected on oversized output, but preventing unbounded upstream allocation still depends on the backend's own implementation.
 
 ## Next acceptance sequence
 

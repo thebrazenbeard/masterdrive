@@ -54,9 +54,14 @@ type ReadSeekCloser interface {
 // Backend's OpenSnapshot must either return a reader whose bytes are fixed at
 // the requested strong ETag for the lifetime of the handle, or return ErrStale.
 // It must not return a mutable live file stream for a successful open.
+// Children MUST use a bounded snapshot cursor: return at most limit entries,
+// with complete=false if any entry is omitted. A backend may inspect one
+// additional cursor entry to establish incompleteness, but MUST NOT enumerate
+// and allocate the entire directory before applying limit. A partial listing
+// cannot be exposed as a successful 207 response.
 type Backend interface {
 	Stat(context.Context, Key) (Metadata, error)
-	Children(context.Context, Key) ([]Metadata, error)
+	Children(context.Context, Key, int) ([]Metadata, bool, error)
 	OpenSnapshot(context.Context, Key, string) (ReadSeekCloser, error)
 }
 
@@ -324,9 +329,9 @@ func (h *Handler) propfind(w http.ResponseWriter, r *http.Request, key Key) {
 	}
 	responses := []davResponse{davEntry(key, meta)}
 	if depth == "1" && meta.Directory {
-		children, err := h.backend.Children(r.Context(), key)
+		children, complete, err := h.backend.Children(r.Context(), key, maxChildren)
 		if err != nil { fail(w, err); return }
-		if len(children) > maxChildren {
+		if !complete || len(children) > maxChildren {
 			http.Error(w, "snapshot listing limit exceeded", http.StatusServiceUnavailable)
 			return
 		}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -29,6 +30,9 @@ type testBackend struct {
 	openErr error
 	openCalls int
 	childCalls int
+	childLimitSeen int
+	// Simulate a malformed adapter that ignores the caller's budget.
+	childLimitIgnored bool
 }
 
 func (b *testBackend) Stat(_ context.Context, k Key) (Metadata, error) {
@@ -37,10 +41,14 @@ func (b *testBackend) Stat(_ context.Context, k Key) (Metadata, error) {
 	if !ok { return Metadata{}, ErrNotFound }
 	return v, nil
 }
-func (b *testBackend) Children(_ context.Context, _ Key) ([]Metadata, error) {
+func (b *testBackend) Children(_ context.Context, _ Key, limit int) ([]Metadata, bool, error) {
 	b.childCalls++
-	if b.childrenErr != nil { return nil, b.childrenErr }
-	return b.children, nil
+	b.childLimitSeen = limit
+	if b.childrenErr != nil { return nil, false, b.childrenErr }
+	if b.childLimitIgnored { return b.children, true, nil }
+	if limit < 0 { return nil, false, errors.New("negative child budget") }
+	if len(b.children) > limit { return b.children[:limit], false, nil }
+	return b.children, true, nil
 }
 func (b *testBackend) OpenSnapshot(_ context.Context, k Key, expected string) (ReadSeekCloser, error) {
 	b.openCalls++
@@ -180,6 +188,7 @@ func TestPropfindDepthAndMultistatus(t *testing.T) {
 		if tc.hrefs==2 && report.Responses[1].Href!=testFile {t.Fatalf("bad child href: %+v",report.Responses)}
 	}
 	if b.childCalls!=1 {t.Fatalf("children calls=%d",b.childCalls)}
+	if b.childLimitSeen!=maxChildren {t.Fatalf("unbounded backend request limit=%d",b.childLimitSeen)}
 	for _, depth:=range []string{"","infinity","2"} {
 		w:=call(h,"PROPFIND",local(testRoot),map[string]string{"Depth":depth},nil)
 		if w.Code!=http.StatusForbidden {t.Errorf("Depth=%q allowed: %d",depth,w.Code)}
@@ -188,6 +197,14 @@ func TestPropfindDepthAndMultistatus(t *testing.T) {
 	for i:=0;i<=maxChildren;i++ {large.children=append(large.children,Metadata{Name:fmt.Sprintf("n%d",i),Directory:true})}
 	w:=call(handler(t,large,true),"PROPFIND",local(testRoot),map[string]string{"Depth":"1"},nil)
 	if w.Code!=http.StatusServiceUnavailable || strings.Contains(w.Body.String(),"multistatus") {t.Fatalf("unbounded listing returned %d",w.Code)}
+	if large.childLimitSeen!=maxChildren {t.Fatalf("large listing requested limit=%d",large.childLimitSeen)}
+	large.childLimitIgnored=true
+	w=call(handler(t,large,true),"PROPFIND",local(testRoot),map[string]string{"Depth":"1"},nil)
+	if w.Code!=http.StatusServiceUnavailable {t.Fatalf("backend ignoring child budget returned %d",w.Code)}
+	exact:=fixture()
+	for i:=1;i<maxChildren;i++ {exact.children=append(exact.children,Metadata{Name:fmt.Sprintf("ok%d",i),Directory:true})}
+	w=call(handler(t,exact,true),"PROPFIND",local(testRoot),map[string]string{"Depth":"1"},nil)
+	if w.Code!=207 {t.Fatalf("exactly bounded complete listing status=%d",w.Code)}
 }
 
 func TestPropfindChildValidationAndSourceFailure(t *testing.T) {

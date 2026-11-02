@@ -1,96 +1,69 @@
 # MasterDrive
 
-**A private storage mesh for Windows and Linux.** Register your devices, explicitly share selected folders, and browse them through one unified interface—without copying everything to a central NAS.
+**One private storage mesh. Every authorized drive. One place to find your files.**
 
-Think *Tailscale for drives*, with a layer for storage visibility and management. MasterDrive does **not** implement its own VPN. It is designed to use an approved, encrypted private network such as Tailscale Serve, while keeping the storage layer transport-agnostic.
+MasterDrive is a Windows/Linux storage-network project: connect your own computers and storage servers over a private network, explicitly share selected directories or drives, and browse those locations through a unified interface. The long-term goal is to make a collection of independent disks feel like one coherent storage environment, without concealing where data actually lives.
 
-> **Project status:** early read-only prototype. This is not a RAID array, backup system, replication service, cloud synchronization tool, kernel filesystem, or production-hardened remote file server. It does not yet pool free capacity into a writable virtual disk. Files stay on their originating machines.
+**Think “Tailscale for hard drives.”** Tailscale or another encrypted private overlay can provide connectivity; MasterDrive provides the storage-specific catalog, permissions, browsing, health, search, and—later—placement and recovery policies. MasterDrive is intended to be transport-agnostic, not a new VPN.
 
-## Current vertical slice
+## What MasterDrive is building
 
-- Opt-in node agent: publish only named read-only directories on a given Windows or Linux machine.
-- Local controller: explicitly register peers, present their shares in a browser, list folders, and download individual files.
-- Persistent host registry with no stored peer tokens; credentials are supplied to the controller at runtime.
-- Peer traffic is expected over TLS on a private network. Local listeners bind to loopback by default; the application refuses public-interface listeners.
-- No auto-discovery, destructive actions, upload, remote execution, replication, or background disk scans.
+| Capability | Intended behavior | Stage |
+| --- | --- | --- |
+| Private device mesh | Connect explicitly approved Windows/Linux peers through an encrypted private network | Initial + pairing improvements |
+| Opt-in exports | Each owner selects the exact folders/drives to make available; no automatic disk exposure | Initial |
+| Unified browser | One responsive GUI for devices, shares, folders, and downloads | Initial |
+| Cross-device inventory | Host and storage capacity, availability, offline/stale state, and permissions | Next |
+| Search and virtual namespace | Find files across registered sources while retaining their host identity | Next |
+| Mounted drive | Optional familiar filesystem view in Explorer or Linux file managers | Later |
+| Writable distributed pool | Placement, redundancy, quotas, checksums, conflicts, and recovery | Research/qualification milestone |
 
-## Prerequisites
+## The architectural distinction
 
-- Go 1.27 or newer, with a security-patched runtime for `os.Root` path confinement.
-- Windows or Linux machines with the directories you intend to export.
-- For access between devices: an existing private encrypted overlay or authenticated TLS reverse proxy. [Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve) is one option; **use Serve, not Funnel**.
+MasterDrive separates three layers:
 
-## Run a local smoke test
+1. **Connectivity and identity:** a private mesh or authenticated TLS transport connects authorized devices. Tailscale Serve is one possible starting point.
+2. **Storage federation:** each device publishes only approved roots. A controller presents a combined namespace and forwards authorized operations. Files remain on the source device unless an explicit transfer is performed.
+3. **Distributed pooling (future):** storage placement, replicas or erasure coding, consistency, and recovery across failure domains. A combined GUI does **not** by itself make a RAID array, a backup, or a durable distributed filesystem.
 
-The examples use two terminals on one machine. Replace the exported directory with an existing absolute directory that contains files you're willing to expose read-only. Use a unique cryptographically random token of at least 32 characters; do not commit it or put it in shell-history examples.
+A disconnected device should be shown as unavailable or stale, never silently represented as a healthy replica. A file is not protected simply because it appears in the unified view.
 
-1. In terminal A, set `MASTERDRIVE_AGENT_TOKEN` through your normal secret-management mechanism and start the node agent:
+## Security principles
 
-   ```sh
-   go run ./cmd/masterdrive agent -export photos=/absolute/path/to/photos
-   ```
+- **Deny by default.** No drive is shared merely because a device joins a network.
+- **Explicit sharing and revocation.** Device approval and per-share authorization must remain separate from network reachability.
+- **Encrypted remote access.** Do not expose an agent or controller directly to the public internet or transmit bearer credentials over remote plaintext HTTP.
+- **Read-only first.** Before uploads, deletes, or mounted writes, establish trustworthy path confinement, atomicity, collision handling, auditability, and rollback.
+- **Honest availability.** Offline hosts, partial transfers, filesystem changes, and failed authorization must be visible and fail closed.
 
-   The agent listens on `127.0.0.1:8789` and requires `Authorization: Bearer <token>` on every route.
+The initial implementation still needs full independent security review and live multi-host qualification. **Do not use it as the only access path or as a backup for irreplaceable data.**
 
-2. In terminal B, register this local peer:
+## Current status
 
-   ```sh
-   go run ./cmd/masterdrive add-host -name my-computer -url http://127.0.0.1:8789
-   ```
+<small>Early development — source and tests are not an installed service.</small>
 
-   Copy the printed host ID. Set `MASTERDRIVE_PEER_TOKENS_JSON` to a JSON object mapping **that ID** to the *same* secret as terminal A, using a secret-safe environment mechanism. Then run:
+- The default branch currently contains the project definition and roadmap, **not yet a released or installed storage mesh**.
+- [Build PR #1](https://github.com/thebrazenbeard/masterdrive/pull/1) contains the developing read-only controller, opt-in node agent, registry, CLI, and initial Windows/Linux tests. Review its latest head and CI before treating it as runnable.
+- [Issue #2](https://github.com/thebrazenbeard/masterdrive/issues/2) tracks the staged acceptance criteria through actual pooling, including unresolved security and runtime gates.
+- Research and independent architecture/security/UI contributions are being developed in separate branches before integration.
 
-   ```sh
-   go run ./cmd/masterdrive controller
-   ```
+There is intentionally no copy-paste production installation command on this page yet. Once an integration release passes the checks and is merged, this README will include a tested Windows and Linux quickstart.
 
-3. Open [http://127.0.0.1:8788](http://127.0.0.1:8788). The controller serves static files from `web/` by default; run it from the repository root or use `-web-dir`.
+## Prior art and compatibility
 
-For actual remote access, run the agent on the other device, use a private HTTPS proxy to its loopback listener (for example `tailscale serve 8789` on that device), and register the HTTPS URL that the private network reports. Ensure tailnet policy limits access to the intended devices. MasterDrive still requires its independent bearer token; network membership alone is not file authorization.
+[Tailscale Taildrive](https://tailscale.com/docs/features/taildrive) already shares folders across tailnet devices and is documented as an alpha feature. MasterDrive's intended added value is a broader, transport-independent storage-management experience—not pretending basic private folder sharing was invented here.
 
-### Commands
+Research also covers [Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve), [rclone mount](https://rclone.org/commands/rclone_mount/), [WinFsp](https://winfsp.dev/doc/), [Syncthing](https://docs.syncthing.net/users/syncing), and [CephFS](https://docs.ceph.com/en/latest/cephfs/). Their distinct tradeoffs matter: remote access, synchronization, mounted filesystems, and true distributed storage are not interchangeable.
 
-| Command | Purpose |
-| --- | --- |
-| `agent -export id=/absolute/path` | Opt in a local read-only directory; repeat `-export` for multiple shares |
-| `add-host -name label -url https://private-peer` | Add or update a known peer in the local registry |
-| `remove-host -id <id>` | Revoke a locally registered peer |
-| `controller -listen 127.0.0.1:8788` | Serve the local GUI and read-only API |
+## Development and evidence
 
-Use `-data-dir` on the controller/registry commands to select a different local registry location. Never put secrets in repository files or URL query parameters.
+The initial backend is being written in Go with no third-party runtime modules, with tests targeting Windows and Linux. Evidence is tracked separately:
 
-## Architecture
+- **Source / test / CI:** checks of exact committed code.
+- **Runtime probe:** a real agent and controller exchanging authorized data on identified hosts.
+- **Security review:** hostile boundary testing, identity and authorization checks, and path confinement.
+- **Product qualification:** recovery, performance, offline behavior, and user workflows on both platforms.
 
-```text
-Windows / Linux device A                 Windows / Linux device B
-  opt-in folders                           opt-in folders
-        |                                        |
-  MasterDrive node                        MasterDrive node
-        |                                        |
-        +-------- private TLS mesh --------------+
-                         |
-                   local controller
-                    |          |
-             host registry     web GUI
-```
+A green CI check is useful, but it does not establish that a distributed storage product is deployed or safe.
 
-The controller is a **catalog and read-only gateway**, not a central data owner. Each source machine retains the authority to expose or withdraw its own directories. A disconnected source is unavailable; it is not silently replaced with stale data. Backend tokens stay server-side.
-
-## Roadmap and safety gates
-
-1. **MVP read-only federation:** secure listing and download, error states, tests, Windows/Linux runtime exercises.
-2. **Private mesh onboarding:** identity-based pair/revoke, transport abstraction, explicit authorized discovery, persistent agent services and usability testing.
-3. **Unified namespace and search:** cross-host metadata index with privacy settings and stale/offline markers, accurate capacity measurement, Taildrive/SMB adapters where appropriate.
-4. **Writes and mounted drives:** only after authorization, collision/conflict, atomicity, lock, recovery, and rollback semantics are demonstrated on both platforms.
-5. **Actual pooling:** optional placement, replication, erasure coding, checksums, durability proofs, rebuild and failure testing. This is a separate product milestone—not implied by the current GUI.
-
-See `docs/` for the research comparison, protocol contract, and threat model as they land. [Taildrive](https://tailscale.com/docs/features/taildrive) already provides Tailscale folder sharing (currently alpha), so MasterDrive aims to differentiate through a broader, transport-agnostic storage control plane rather than duplicating that capability blindly.
-
-## Development
-
-```sh
-go test -race ./...
-go vet ./...
-```
-
-No third-party Go modules are needed in the initial build. A license has not yet been selected; reuse rights must not be assumed. Third-party projects and trademarks remain their owners' property.
+See the [roadmap](https://github.com/thebrazenbeard/masterdrive/issues/2) and [open development PRs](https://github.com/thebrazenbeard/masterdrive/pulls). License terms have not yet been selected; do not assume permission to redistribute the source.

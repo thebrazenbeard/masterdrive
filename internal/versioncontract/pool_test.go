@@ -173,3 +173,69 @@ func TestCapturePoolConcurrentOpenAndClose(t *testing.T) {
 		t.Fatalf("concurrent close leaked budget: %+v", usage)
 	}
 }
+
+type heldReadCloser struct {
+	entered chan struct{}
+	unblock chan struct{}
+}
+
+func (r *heldReadCloser) Read(p []byte) (int, error) {
+	close(r.entered)
+	<-r.unblock
+	p[0] = 'z'
+	return 1, nil
+}
+
+func (*heldReadCloser) Close() error { return nil }
+
+// A Close racing an in-progress Read must not release the reservation until
+// the read finishes. This is an accounting test, not a revocation guarantee.
+func TestCapturePoolCloseWaitsForInFlightRead(t *testing.T) {
+	p := mustPool(t, 3, 1)
+	s, err := p.Capture(context.Background(), strings.NewReader("x"), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := s.OpenRange(s.ETag(), 0, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := &heldReadCloser{entered: make(chan struct{}), unblock: make(chan struct{})}
+	r.(*poolReader).inner = held // Inject a blocking reader into an existing accounted lease.
+	readDone := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 1)
+		_, err := r.Read(buf)
+		if err == nil && string(buf) != "z" {
+			err = errors.New("in-flight reader returned wrong byte")
+		}
+		readDone <- err
+	}()
+	<-held.entered
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	closeStarted := make(chan struct{})
+	closeDone := make(chan error, 1)
+	go func() {
+		close(closeStarted)
+		closeDone <- r.Close()
+	}()
+	<-closeStarted
+	if got := p.Usage(); got.ReservedBytes != 3 || got.Reservations != 1 {
+		t.Fatalf("released quota while Read was blocked: %+v", got)
+	}
+	close(held.unblock)
+	if err := <-readDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-closeDone; err != nil {
+		t.Fatal(err)
+	}
+	if got := p.Usage(); got != (PoolUsage{}) {
+		t.Fatalf("reservation remained after Read/Close: %+v", got)
+	}
+	if _, err := r.Read(make([]byte, 1)); !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("closed reader remained readable: %v", err)
+	}
+}

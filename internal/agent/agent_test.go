@@ -20,6 +20,11 @@ func testHandler(t *testing.T, exports []Export) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if err := h.Close(); err != nil {
+			t.Errorf("close export roots: %v", err)
+		}
+	})
 	return h
 }
 
@@ -65,7 +70,7 @@ func TestSharesNeverExposeLocalPaths(t *testing.T) {
 		}
 	}
 	w := request(h, "GET", "/v1/shares", testToken)
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Photo Archive") {
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Photo Archive") || !strings.Contains(w.Body.String(), `"read_only":true`) {
 		t.Fatalf("shares request status=%d body=%s", w.Code, w.Body.String())
 	}
 	if strings.Contains(w.Body.String(), root) || strings.Contains(w.Body.String(), "Path") {
@@ -76,6 +81,37 @@ func TestSharesNeverExposeLocalPaths(t *testing.T) {
 	}
 	if w := request(h, "POST", "/v1/shares", testToken); w.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("write method was not rejected: %d", w.Code)
+	}
+}
+
+func TestPinnedRootRejectsExportPathReplacement(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Windows usually disallows renaming a directory held open by os.Root.
+		t.Skip("root path rename is blocked by Windows directory handles")
+	}
+	parent := t.TempDir()
+	exportPath := filepath.Join(parent, "export")
+	if err := os.Mkdir(exportPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(exportPath, "original.txt"), []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := testHandler(t, []Export{{ID: "docs", Name: "Documents", Path: exportPath}})
+	if err := os.Rename(exportPath, filepath.Join(parent, "old-export")); err != nil {
+		t.Skipf("root rename unsupported: %v", err)
+	}
+	if err := os.Mkdir(exportPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(exportPath, "unexpected.txt"), []byte("bait"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if w := request(h, "GET", "/v1/download?share=docs&path=unexpected.txt", testToken); w.Code == http.StatusOK || strings.Contains(w.Body.String(), "bait") {
+		t.Fatalf("replaced path exposed alternate content: status=%d body=%q", w.Code, w.Body.String())
+	}
+	if w := request(h, "GET", "/v1/download?share=docs&path=original.txt", testToken); w.Code != http.StatusOK || w.Body.String() != "original" {
+		t.Fatalf("lost pinned directory after rename: status=%d body=%q", w.Code, w.Body.String())
 	}
 }
 

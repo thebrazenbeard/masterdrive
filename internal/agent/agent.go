@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -43,8 +44,9 @@ type Export struct {
 
 // Share is safe to return to a remote peer; no machine-local path is included.
 type Share struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	ReadOnly bool   `json:"read_only"`
 }
 
 // Entry describes a single immediate child. A symlink is reported but its
@@ -57,46 +59,62 @@ type Entry struct {
 	ModTime time.Time `json:"modified_at"`
 }
 
-type service struct {
-	shares []Share
-	exports map[string]Export
-	token  [sha256.Size]byte
+// Handler pins opened export roots for its lifetime. Replacing a configured
+// path (or any ancestor) after registration cannot silently redirect exports.
+// Call Close after shutting down the HTTP server to release the directory
+// handles. A Handler must not be reused after Close.
+type Handler struct {
+	shares    []Share
+	roots     map[string]*os.Root
+	token     [sha256.Size]byte
+	mux       *http.ServeMux
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // NewHandler validates the explicit exports and returns a fully authenticated
 // HTTP handler. It does not listen on a socket or grant network access itself.
 // Keep the bearer token secret and generate it with a cryptographic RNG.
-func NewHandler(exports []Export, bearerToken string) (http.Handler, error) {
+// Its caller owns the returned Handler and must call Close on shutdown.
+func NewHandler(exports []Export, bearerToken string) (*Handler, error) {
 	if len(bearerToken) < 32 || len(bearerToken) > 4096 || strings.TrimSpace(bearerToken) != bearerToken || strings.ContainsAny(bearerToken, "\r\n\t ") {
 		return nil, errors.New("agent: bearer token must contain at least 32 non-whitespace bytes")
 	}
 
-	s := &service{exports: make(map[string]Export, len(exports)), token: sha256.Sum256([]byte(bearerToken))}
+	s := &Handler{roots: make(map[string]*os.Root, len(exports)), token: sha256.Sum256([]byte(bearerToken))}
+	fail := func(err error) (*Handler, error) {
+		_ = s.Close()
+		return nil, err
+	}
 	for _, e := range exports {
 		if !validID(e.ID) || strings.TrimSpace(e.Name) == "" || len(e.Name) > 128 || !filepath.IsAbs(e.Path) {
-			return nil, fmt.Errorf("agent: invalid export configuration for %q", e.ID)
+			return fail(fmt.Errorf("agent: invalid export configuration for %q", e.ID))
 		}
-		if _, exists := s.exports[e.ID]; exists {
-			return nil, fmt.Errorf("agent: duplicate export ID %q", e.ID)
+		if _, exists := s.roots[e.ID]; exists {
+			return fail(fmt.Errorf("agent: duplicate export ID %q", e.ID))
 		}
 		root, err := os.OpenRoot(e.Path)
 		if err != nil {
-			return nil, fmt.Errorf("agent: cannot open export %q: %w", e.ID, err)
+			return fail(fmt.Errorf("agent: cannot open export %q: %w", e.ID, err))
 		}
 		info, statErr := root.Stat(".")
-		closeErr := root.Close()
-		if statErr != nil || !info.IsDir() || closeErr != nil {
-			return nil, fmt.Errorf("agent: export %q is not an accessible directory", e.ID)
+		if statErr != nil || !info.IsDir() {
+			_ = root.Close()
+			return fail(fmt.Errorf("agent: export %q is not an accessible directory", e.ID))
 		}
-		s.exports[e.ID] = e
-		s.shares = append(s.shares, Share{ID: e.ID, Name: e.Name})
+		s.roots[e.ID] = root
+		s.shares = append(s.shares, Share{ID: e.ID, Name: e.Name, ReadOnly: true})
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1/shares", s.getShares)
-	mux.HandleFunc("GET /v1/list", s.list)
-	mux.HandleFunc("GET /v1/download", s.download)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	s.mux = http.NewServeMux()
+	s.mux.HandleFunc("GET /v1/shares", s.getShares)
+	s.mux.HandleFunc("GET /v1/list", s.list)
+	s.mux.HandleFunc("GET /v1/download", s.download)
+	return s, nil
+}
+
+// ServeHTTP enforces the same token on both metadata and byte-transfer routes.
+func (s *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		if !s.authorized(r) {
@@ -104,8 +122,20 @@ func NewHandler(exports []Export, bearerToken string) (http.Handler, error) {
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
-		mux.ServeHTTP(w, r)
-	}), nil
+		s.mux.ServeHTTP(w, r)
+}
+
+// Close releases pinned roots. Shutdown the HTTP server before calling Close.
+// Subsequent calls are safe and return the same error, if any.
+func (s *Handler) Close() error {
+	s.closeOnce.Do(func() {
+		for _, root := range s.roots {
+			if err := root.Close(); err != nil && s.closeErr == nil {
+				s.closeErr = err
+			}
+		}
+	})
+	return s.closeErr
 }
 
 func validID(id string) bool {
@@ -120,7 +150,7 @@ func validID(id string) bool {
 	return true
 }
 
-func (s *service) authorized(r *http.Request) bool {
+func (s *Handler) authorized(r *http.Request) bool {
 	values := r.Header.Values("Authorization")
 	if len(values) != 1 || len(values[0]) > 4103 {
 		return false
@@ -133,7 +163,7 @@ func (s *service) authorized(r *http.Request) bool {
 	return subtle.ConstantTimeCompare(digest[:], s.token[:]) == 1
 }
 
-func (s *service) getShares(w http.ResponseWriter, _ *http.Request) {
+func (s *Handler) getShares(w http.ResponseWriter, _ *http.Request) {
 	shares := s.shares
 	if shares == nil {
 		shares = []Share{}
@@ -156,31 +186,25 @@ func localPath(p string) (string, error) {
 	return filepath.Localize(p)
 }
 
-func (s *service) open(w http.ResponseWriter, r *http.Request) (*os.Root, *os.File, string, string, bool) {
+func (s *Handler) open(w http.ResponseWriter, r *http.Request) (*os.File, string, string, bool) {
 	id := r.URL.Query().Get("share")
-	e, exists := s.exports[id]
+	root, exists := s.roots[id]
 	if !exists {
 		writeError(w, http.StatusNotFound, "share not found")
-		return nil, nil, "", "", false
+		return nil, "", "", false
 	}
 	p := r.URL.Query().Get("path")
 	local, err := localPath(p)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid path")
-		return nil, nil, "", "", false
-	}
-	root, err := os.OpenRoot(e.Path)
-	if err != nil {
-		writeError(w, http.StatusNotFound, "path not available")
-		return nil, nil, "", "", false
+		return nil, "", "", false
 	}
 	f, err := root.Open(local)
 	if err != nil {
-		root.Close()
 		writeError(w, http.StatusNotFound, "path not available")
-		return nil, nil, "", "", false
+		return nil, "", "", false
 	}
-	return root, f, id, p, true
+	return f, id, p, true
 }
 
 func pageValues(r *http.Request) (limit, offset int, err error) {
@@ -200,17 +224,16 @@ func pageValues(r *http.Request) (limit, offset int, err error) {
 	return limit, offset, nil
 }
 
-func (s *service) list(w http.ResponseWriter, r *http.Request) {
+func (s *Handler) list(w http.ResponseWriter, r *http.Request) {
 	limit, offset, err := pageValues(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	root, f, id, p, ok := s.open(w, r)
+	f, id, p, ok := s.open(w, r)
 	if !ok {
 		return
 	}
-	defer root.Close()
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil || !info.IsDir() {
@@ -271,16 +294,15 @@ func (s *service) list(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
-func (s *service) download(w http.ResponseWriter, r *http.Request) {
+func (s *Handler) download(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("path") == "" || r.URL.Query().Get("path") == "." {
 		writeError(w, http.StatusBadRequest, "file path required")
 		return
 	}
-	root, f, _, p, ok := s.open(w, r)
+	f, _, p, ok := s.open(w, r)
 	if !ok {
 		return
 	}
-	defer root.Close()
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil || !info.Mode().IsRegular() {

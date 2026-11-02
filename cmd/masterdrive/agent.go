@@ -40,6 +40,7 @@ func runAgent(args []string, stdout io.Writer) error {
 	if secret == "" { return errors.New("MASTERDRIVE_AGENT_TOKEN must be set (32+ random characters)") }
 	handler, err := agent.NewHandler(exports, secret)
 	if err != nil { return err }
+	defer handler.Close()
 	fmt.Fprintf(stdout, "MasterDrive agent serving %d explicit read-only shares on %s\n", len(exports), *listen)
 	// The agent requires a bearer token for every request. A private overlay
 	// reverse proxy may preserve its external Host header, so it deliberately

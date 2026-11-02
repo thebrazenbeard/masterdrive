@@ -23,6 +23,7 @@ func TestReadOnlyMeshThroughLocalGateway(t *testing.T) {
 	const token = "integration-only-32-char-secret-0123456789"
 	agentHandler, err := agent.NewHandler([]agent.Export{{ID: "docs", Name: "Documents", Path: shareDir}}, token)
 	if err != nil { t.Fatal(err) }
+	defer agentHandler.Close()
 	peer := httptest.NewServer(agentHandler)
 	defer peer.Close()
 	store, err := catalog.Open(t.TempDir())

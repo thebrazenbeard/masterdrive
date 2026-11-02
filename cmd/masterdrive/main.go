@@ -49,9 +49,14 @@ func run(args []string, stdout io.Writer) error {
 			}
 		}
 		mux := http.NewServeMux()
-		mux.Handle("/api/v1/", server.New(store, tokens, nil))
+		session, err := server.NewSessionToken()
+		if err != nil { return fmt.Errorf("generate local session: %w", err) }
+		api, err := server.RequireSession(session, server.New(store, tokens, nil))
+		if err != nil { return err }
+		mux.Handle("/api/v1/", api)
 		mux.Handle("/", http.FileServer(http.Dir(*webDir)))
-		fmt.Fprintf(stdout, "MasterDrive local controller: http://%s\n", *listen)
+		fmt.Fprintf(stdout, "MasterDrive local controller: http://%s/#session=%s\n", *listen, session)
+		fmt.Fprintln(stdout, "Open this local link once; it activates a browser session without exposing peer credentials.")
 		return http.ListenAndServe(*listen, server.RequireLoopbackHost(mux))
 	case "add-host":
 		flags := flag.NewFlagSet("add-host", flag.ContinueOnError)

@@ -28,3 +28,12 @@ jobs:
         run: go test -race ./...
       - name: Static analysis
         run: go vet ./...
+      - name: Frontend path contract tests
+        run: node --test web/paths.test.mjs
+      - name: Local-process smoke (Linux)
+        if: runner.os == 'Linux'
+        run: bash scripts/smoke-local.sh
+      - name: Local-process smoke (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/smoke-local.ps1

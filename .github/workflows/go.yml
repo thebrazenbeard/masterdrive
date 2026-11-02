@@ -28,6 +28,13 @@ jobs:
         run: go test -race ./...
       - name: Static analysis
         run: go vet ./...
+      - uses: actions/setup-python@v6
+        if: runner.os == 'Linux'
+        with:
+          python-version: '3.12'
+      - name: Candidate archive unit tests
+        if: runner.os == 'Linux'
+        run: python3 -m unittest discover -s scripts -p 'test_package.py'
       - name: Frontend path contract tests
         run: node --test web/paths.test.mjs
       - name: Local-process smoke (Linux)

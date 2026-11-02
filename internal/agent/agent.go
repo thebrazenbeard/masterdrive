@@ -10,6 +10,7 @@
 package agent
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
@@ -42,6 +43,14 @@ type Export struct {
 	Path string
 }
 
+// AccessGrant gives exactly one credential permission to read specific named
+// shares. BearerToken is never returned by the API or persisted by Handler.
+// Existing NewHandler remains available for single-token, all-share mode.
+type AccessGrant struct {
+	BearerToken string
+	ShareIDs []string
+}
+
 // Share is safe to return to a remote peer; no machine-local path is included.
 type Share struct {
 	ID       string `json:"id"`
@@ -66,22 +75,51 @@ type Entry struct {
 type Handler struct {
 	shares    []Share
 	roots     map[string]*os.Root
-	token     [sha256.Size]byte
+	grants    []preparedGrant
 	mux       *http.ServeMux
 	closeOnce sync.Once
 	closeErr  error
 }
+
+type preparedGrant struct {
+	digest [sha256.Size]byte
+	shares map[string]struct{}
+}
+
+type grantContextKey struct{}
 
 // NewHandler validates the explicit exports and returns a fully authenticated
 // HTTP handler. It does not listen on a socket or grant network access itself.
 // Keep the bearer token secret and generate it with a cryptographic RNG.
 // Its caller owns the returned Handler and must call Close on shutdown.
 func NewHandler(exports []Export, bearerToken string) (*Handler, error) {
-	if len(bearerToken) < 32 || len(bearerToken) > 4096 || strings.TrimSpace(bearerToken) != bearerToken || strings.ContainsAny(bearerToken, "\r\n\t ") {
-		return nil, errors.New("agent: bearer token must contain at least 32 non-whitespace bytes")
-	}
+	ids := make([]string, 0, len(exports))
+	for _, e := range exports { ids = append(ids, e.ID) }
+	return newHandler(exports, []AccessGrant{{BearerToken: bearerToken, ShareIDs: ids}}, true)
+}
 
-	s := &Handler{roots: make(map[string]*os.Root, len(exports)), token: sha256.Sum256([]byte(bearerToken))}
+// NewHandlerWithGrants opts into separately scoped credentials. Each grant
+// MUST name at least one existing share, and every token must be unique. An
+// authorized client sees and reads only its listed shares; unknown share IDs
+// return 404, matching nonexistent share behavior.
+//
+// To revoke a grant in this v1 experiment, stop the listener, close this
+// handler, then start a new handler without that grant. Already-open streams
+// need listener shutdown/drain; this is not a live revocation API.
+func NewHandlerWithGrants(exports []Export, grants []AccessGrant) (*Handler, error) {
+	return newHandler(exports, grants, false)
+}
+
+func validBearerToken(bearerToken string) bool {
+	return len(bearerToken) >= 32 && len(bearerToken) <= 4096 &&
+		strings.TrimSpace(bearerToken) == bearerToken && !strings.ContainsAny(bearerToken, "\r\n\t ")
+}
+
+func newHandler(exports []Export, grants []AccessGrant, legacyEmptyShares bool) (*Handler, error) {
+	if len(grants) == 0 || len(grants) > 256 {
+		return nil, errors.New("agent: a bounded nonempty set of access grants is required")
+	}
+	s := &Handler{roots: make(map[string]*os.Root, len(exports))}
 	fail := func(err error) (*Handler, error) {
 		_ = s.Close()
 		return nil, err
@@ -106,23 +144,49 @@ func NewHandler(exports []Export, bearerToken string) (*Handler, error) {
 		s.shares = append(s.shares, Share{ID: e.ID, Name: e.Name, ReadOnly: true})
 	}
 
+	seen := make(map[[sha256.Size]byte]struct{}, len(grants))
+	for _, g := range grants {
+		if !validBearerToken(g.BearerToken) || (len(g.ShareIDs) == 0 && !legacyEmptyShares) {
+			return fail(errors.New("agent: grant needs a strong token and at least one share"))
+		}
+		digest := sha256.Sum256([]byte(g.BearerToken))
+		if _, duplicate := seen[digest]; duplicate {
+			return fail(errors.New("agent: duplicate bearer credential"))
+		}
+		seen[digest] = struct{}{}
+		allowed := make(map[string]struct{}, len(g.ShareIDs))
+		for _, id := range g.ShareIDs {
+			if _, exists := s.roots[id]; !exists {
+				return fail(fmt.Errorf("agent: grant references unknown share %q", id))
+			}
+			if _, duplicate := allowed[id]; duplicate {
+				return fail(fmt.Errorf("agent: duplicate share in grant %q", id))
+			}
+			allowed[id] = struct{}{}
+		}
+		s.grants = append(s.grants, preparedGrant{digest: digest, shares:allowed})
+	}
+
 	s.mux = http.NewServeMux()
 	s.mux.HandleFunc("GET /v1/shares", s.getShares)
 	s.mux.HandleFunc("GET /v1/list", s.list)
+	s.mux.HandleFunc("GET /v1/search", s.search)
 	s.mux.HandleFunc("GET /v1/download", s.download)
 	return s, nil
 }
 
-// ServeHTTP enforces the same token on both metadata and byte-transfer routes.
+// ServeHTTP authenticates a token and enforces its share scope on metadata and
+// bytes alike. A valid token by itself cannot address a share outside its grant.
 func (s *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		if !s.authorized(r) {
+		allowed, authorized := s.authorized(r)
+		if !authorized {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="MasterDrive Agent"`)
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
-		s.mux.ServeHTTP(w, r)
+		s.mux.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), grantContextKey{}, allowed)))
 }
 
 // Close releases pinned roots. Shutdown the HTTP server before calling Close.
@@ -150,23 +214,38 @@ func validID(id string) bool {
 	return true
 }
 
-func (s *Handler) authorized(r *http.Request) bool {
+func (s *Handler) authorized(r *http.Request) (map[string]struct{}, bool) {
 	values := r.Header.Values("Authorization")
 	if len(values) != 1 || len(values[0]) > 4103 {
-		return false
+		return nil, false
 	}
 	scheme, received, ok := strings.Cut(values[0], " ")
 	if !ok || !strings.EqualFold(scheme, "Bearer") || received == "" || strings.ContainsAny(received, "\r\n\t ") {
-		return false
+		return nil, false
 	}
 	digest := sha256.Sum256([]byte(received))
-	return subtle.ConstantTimeCompare(digest[:], s.token[:]) == 1
+	var allowed map[string]struct{}
+	// Do not reveal a token's grant position through early-return timing.
+	for _, g := range s.grants {
+		if subtle.ConstantTimeCompare(digest[:], g.digest[:]) == 1 {
+			allowed = g.shares
+		}
+	}
+	return allowed, allowed != nil
 }
 
-func (s *Handler) getShares(w http.ResponseWriter, _ *http.Request) {
-	shares := s.shares
-	if shares == nil {
-		shares = []Share{}
+func permittedShares(r *http.Request) map[string]struct{} {
+	allowed, _ := r.Context().Value(grantContextKey{}).(map[string]struct{})
+	return allowed
+}
+
+func (s *Handler) getShares(w http.ResponseWriter, r *http.Request) {
+	allowed := permittedShares(r)
+	shares := make([]Share, 0, len(allowed))
+	for _, share := range s.shares {
+		if _, ok := allowed[share.ID]; ok {
+			shares = append(shares, share)
+		}
 	}
 	writeJSON(w, http.StatusOK, struct {
 		Shares []Share `json:"shares"`
@@ -188,6 +267,10 @@ func localPath(p string) (string, error) {
 
 func (s *Handler) open(w http.ResponseWriter, r *http.Request) (*os.File, string, string, bool) {
 	id := r.URL.Query().Get("share")
+	if _, allowed := permittedShares(r)[id]; !allowed {
+		writeError(w, http.StatusNotFound, "share not found")
+		return nil, "", "", false
+	}
 	root, exists := s.roots[id]
 	if !exists {
 		writeError(w, http.StatusNotFound, "share not found")

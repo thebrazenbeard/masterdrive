@@ -223,3 +223,103 @@ func TestTraversalAndNonFileReadsFailClosed(t *testing.T) {
 		}
 	}
 }
+
+func TestScopedGrantsHideOtherSharesAndBlockTheirBytes(t *testing.T) {
+	photos := t.TempDir()
+	private := t.TempDir()
+	if err := os.WriteFile(filepath.Join(photos, "photo.txt"), []byte("public-photo"), 0600); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(filepath.Join(private, "passwords.txt"), []byte("never-expose-me"), 0600); err != nil { t.Fatal(err) }
+	photoToken := "photo-only-test-token-0123456789abcdefghijklmnopqrstuvwxyz"
+	privateToken := "private-only-test-token-0123456789abcdefghijklmnopqrstuvwxyz"
+	h, err := NewHandlerWithGrants([]Export{
+		{ID:"photos", Name:"Photographs", Path:photos},
+		{ID:"private", Name:"Private", Path:private},
+	}, []AccessGrant{
+		{BearerToken:photoToken, ShareIDs:[]string{"photos"}},
+		{BearerToken:privateToken, ShareIDs:[]string{"private"}},
+	})
+	if err != nil { t.Fatal(err) }
+	t.Cleanup(func(){ if err := h.Close(); err != nil {t.Error(err)} })
+	for _, tc := range []struct{token, allowedShare, deniedShare, allowedFile, deniedFile, deniedName string}{
+		{photoToken,"photos","private","photo.txt","passwords.txt","Private"},
+		{privateToken,"private","photos","passwords.txt","photo.txt","Photographs"},
+	} {
+		w := request(h, http.MethodGet, "/v1/shares", tc.token)
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), tc.allowedShare) ||
+			strings.Contains(w.Body.String(), tc.deniedShare) || strings.Contains(w.Body.String(), tc.deniedName) {
+			t.Fatalf("grant inventory leaked share: %d %s", w.Code, w.Body.String())
+		}
+		for _, route := range []string{
+			"/v1/list?share="+tc.deniedShare,
+			"/v1/download?share="+tc.deniedShare+"&path="+tc.deniedFile,
+		} {
+			w = request(h, http.MethodGet, route, tc.token)
+			if w.Code != http.StatusNotFound || strings.Contains(w.Body.String(), "never-expose-me") {
+				t.Fatalf("unauthorized share was disclosed: %s -> %d %s", route, w.Code, w.Body.String())
+			}
+		}
+		for _, route := range []string{
+			"/v1/list?share="+tc.allowedShare,
+			"/v1/download?share="+tc.allowedShare+"&path="+tc.allowedFile,
+		} {
+			w = request(h, http.MethodGet, route, tc.token)
+			if w.Code != http.StatusOK { t.Fatalf("authorized share was denied: %s -> %d %s", route,w.Code,w.Body.String()) }
+		}
+	}
+	if w := request(h, http.MethodGet, "/v1/shares", "wrong"); w.Code != http.StatusUnauthorized {
+		t.Fatalf("unconfigured token status=%d", w.Code)
+	}
+}
+
+func TestScopedGrantConfigurationMustBeExplicitAndNonAmbiguous(t *testing.T) {
+	exports := []Export{{ID:"photos",Name:"Photos",Path:t.TempDir()}}
+	goodToken := "sufficient-length-grant-token-abcdefghijklmnopqrstuvwxyz"
+	bad := [][]AccessGrant{
+		nil,
+		{},
+		{{BearerToken:"short",ShareIDs:[]string{"photos"}}},
+		{{BearerToken:goodToken,ShareIDs:nil}},
+		{{BearerToken:goodToken,ShareIDs:[]string{"missing"}}},
+		{{BearerToken:goodToken,ShareIDs:[]string{"photos","photos"}}},
+		{{BearerToken:goodToken,ShareIDs:[]string{"photos"}},
+		 {BearerToken:goodToken,ShareIDs:[]string{"photos"}}},
+	}
+	for i, grants := range bad {
+		if h, err := NewHandlerWithGrants(exports, grants); err == nil {
+			_ = h.Close()
+			t.Errorf("accepted unsafe grants case %d", i)
+		}
+	}
+}
+
+func TestLegacyHandlerTokenRetainsAccessToEveryExplicitExport(t *testing.T) {
+	first, second := t.TempDir(),t.TempDir()
+	h := testHandler(t, []Export{{ID:"one",Name:"One",Path:first},{ID:"two",Name:"Two",Path:second}})
+	w := request(h, http.MethodGet, "/v1/shares", testToken)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "One") || !strings.Contains(w.Body.String(), "Two") {
+		t.Fatalf("legacy API unexpectedly lost all-shares access: %d %s",w.Code,w.Body.String())
+	}
+}
+
+func TestReplacingHandlerDropsOldGrantButNotExistingFile(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "fixture.txt"), []byte("allowed-file"), 0600); err != nil { t.Fatal(err) }
+	exports := []Export{{ID:"approved", Name:"Approved", Path:root}}
+	oldToken := "old-scoped-grant-token-abcdefghijklmnopqrstuvwxyz-00001"
+	newToken := "new-scoped-grant-token-abcdefghijklmnopqrstuvwxyz-00002"
+	oldHandler, err := NewHandlerWithGrants(exports, []AccessGrant{{BearerToken:oldToken, ShareIDs:[]string{"approved"}}})
+	if err != nil { t.Fatal(err) }
+	if w := request(oldHandler,http.MethodGet,"/v1/download?share=approved&path=fixture.txt",oldToken); w.Code != http.StatusOK {
+		t.Fatalf("initial grant unavailable: HTTP %d",w.Code)
+	}
+	if err := oldHandler.Close(); err != nil { t.Fatal(err) }
+	newHandler, err := NewHandlerWithGrants(exports, []AccessGrant{{BearerToken:newToken, ShareIDs:[]string{"approved"}}})
+	if err != nil { t.Fatal(err) }
+	defer newHandler.Close()
+	if w := request(newHandler,http.MethodGet,"/v1/download?share=approved&path=fixture.txt",oldToken); w.Code != http.StatusUnauthorized || strings.Contains(w.Body.String(),"allowed-file") {
+		t.Fatalf("removed grant remained authorized: HTTP %d %s",w.Code,w.Body.String())
+	}
+	if w := request(newHandler,http.MethodGet,"/v1/download?share=approved&path=fixture.txt",newToken); w.Code != http.StatusOK || w.Body.String() != "allowed-file" {
+		t.Fatalf("replacement grant failed: HTTP %d %s",w.Code,w.Body.String())
+	}
+}

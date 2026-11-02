@@ -1,0 +1,52 @@
+name: Build unsigned candidate archives
+
+# Intentionally manual-only. This workflow does not create a release, publish
+# packages, sign executables, or install software on a user's computer.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Safe candidate label (for example dev-1); not a release tag'
+        required: true
+        default: dev
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: masterdrive-package-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Test source
+        run: go test ./...
+      - name: Test deterministic archive packager
+        run: python3 -m unittest discover -s scripts -p 'test_package.py' -v
+      - name: Cross-build four candidate targets
+        env:
+          PACKAGE_VERSION: ${{ inputs.version }}
+          PACKAGE_REVISION: ${{ github.sha }}
+        run: python3 scripts/package.py --version "$PACKAGE_VERSION" --revision "$PACKAGE_REVISION" --out dist
+      - name: Verify published checksum list before artifact upload
+        run: cd dist && sha256sum -c SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: masterdrive-unsigned-candidates-${{ github.run_id }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+

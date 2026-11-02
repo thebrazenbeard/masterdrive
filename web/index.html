@@ -27,7 +27,12 @@
       <main id="main" tabindex="-1">
         <div class="overview"><div><div class="overview-kicker">MASTERDRIVE / EXPLORER</div><h2 id="location-title">Your storage universe</h2><p id="location-subtitle">Select a device and a shared drive to explore files across your mesh.</p></div><div class="overview-orbit" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="orbit-core">✦</div></div></div>
         <section class="file-panel" aria-label="Files and folders">
-          <div class="panel-toolbar"><nav id="breadcrumbs" aria-label="Current folder" class="breadcrumbs"><span>All devices</span></nav><div class="toolbar-actions"><label class="search-box"><span aria-hidden="true">⌕</span><span class="sr-only">Filter current folder</span><input id="filter" type="search" placeholder="Filter this folder" autocomplete="off"></label></div></div>
+          <div class="panel-toolbar"><nav id="breadcrumbs" aria-label="Current folder" class="breadcrumbs"><span>All devices</span></nav><div class="toolbar-actions"><label class="search-box"><span aria-hidden="true">⌕</span><span class="sr-only">Filter loaded files</span><input id="filter" type="search" placeholder="Filter loaded files" autocomplete="off"></label></div></div>
+          <form id="folder-search-form" class="folder-search" role="search" aria-label="Search selected folder">
+            <div class="folder-search-copy"><label for="folder-search">Find names in this folder</label><p>Checks immediate files and folders on this selected share only. No subfolders scanned.</p></div>
+            <div class="folder-search-controls"><input id="folder-search" type="search" minlength="2" maxlength="128" placeholder="Enter at least 2 characters" autocomplete="off" disabled><button id="folder-search-submit" class="primary-button" type="submit" disabled>Find files</button><button id="folder-search-clear" class="secondary-button" type="button" disabled>Clear search</button></div>
+          </form>
+          <div id="search-feedback" class="search-feedback" role="status" aria-live="polite" hidden></div>
           <div class="table-head" aria-hidden="true"><span>NAME</span><span>SIZE</span><span>MODIFIED</span><span></span></div>
           <div id="file-list" class="file-list" aria-live="polite" aria-busy="false"><div class="empty-state"><div class="empty-symbol" aria-hidden="true">⌁</div><h3>Every drive. One destination.</h3><p>Choose a device from the left to see its shared storage.</p></div></div>
           <div class="panel-bottom"><span id="item-count">No folder selected</span><span>Read-only explorer · v0.1</span></div>

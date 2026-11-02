@@ -36,7 +36,7 @@ jobs:
         if: runner.os == 'Linux'
         run: python3 -m unittest discover -s scripts -p 'test_package.py'
       - name: Frontend path contract tests
-        run: node --test web/paths.test.mjs
+        run: node --test web/paths.test.mjs web/app.test.mjs
       - name: Local-process smoke (Linux)
         if: runner.os == 'Linux'
         run: bash scripts/smoke-local.sh

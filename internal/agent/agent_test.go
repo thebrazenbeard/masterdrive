@@ -1,0 +1,189 @@
+package agent
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+)
+
+const testToken = "test-token-with-more-than-thirty-two-random-looking-bytes"
+
+func testHandler(t *testing.T, exports []Export) http.Handler {
+	t.Helper()
+	h, err := NewHandler(exports, testToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h
+}
+
+func request(h http.Handler, method, url, token string) *httptest.ResponseRecorder {
+	r := httptest.NewRequest(method, url, nil)
+	if token != "" {
+		r.Header.Set("Authorization", "Bearer "+token)
+	}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	return w
+}
+
+func TestExportRequiresExplicitConfiguration(t *testing.T) {
+	root := t.TempDir()
+	if _, err := NewHandler([]Export{{ID: "x", Name: "Docs", Path: root}}, "too-short"); err == nil {
+		t.Fatal("accepted short token")
+	}
+	if _, err := NewHandler([]Export{{ID: "x", Name: "Docs", Path: "relative"}}, testToken); err == nil {
+		t.Fatal("accepted relative export path")
+	}
+	if _, err := NewHandler([]Export{{ID: "a", Name: "Docs", Path: root}, {ID: "a", Name: "Other", Path: root}}, testToken); err == nil {
+		t.Fatal("accepted duplicate share identifier")
+	}
+	if _, err := NewHandler([]Export{{ID: "../x", Name: "Docs", Path: root}}, testToken); err == nil {
+		t.Fatal("accepted path-like share identifier")
+	}
+	if _, err := NewHandler([]Export{{ID: "x", Name: "Docs", Path: filepath.Join(root, "missing")}}, testToken); err == nil {
+		t.Fatal("accepted missing export path")
+	}
+}
+
+func TestSharesNeverExposeLocalPaths(t *testing.T) {
+	root := t.TempDir()
+	h := testHandler(t, []Export{{ID: "photos", Name: "Photo Archive", Path: root}})
+	for _, unauthorizedToken := range []string{"", "wrong-token", testToken + "!"} {
+		w := request(h, "GET", "/v1/shares", unauthorizedToken)
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("unauthorized token %q: status %d", unauthorizedToken, w.Code)
+		}
+		if strings.Contains(w.Body.String(), "Photo Archive") {
+			t.Fatal("leaked share metadata to unauthenticated client")
+		}
+	}
+	w := request(h, "GET", "/v1/shares", testToken)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Photo Archive") {
+		t.Fatalf("shares request status=%d body=%s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), root) || strings.Contains(w.Body.String(), "Path") {
+		t.Fatal("response disclosed local filesystem path")
+	}
+	if w.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("missing no-store on private response")
+	}
+	if w := request(h, "POST", "/v1/shares", testToken); w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("write method was not rejected: %d", w.Code)
+	}
+}
+
+func TestListPaginationAndDownloadRanges(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 205; i++ {
+		if err := os.WriteFile(filepath.Join(root, fmt.Sprintf("part-%03d.txt", i)), []byte("sample"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(root, "nested"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "nested", "hello.txt"), []byte("abcdef"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := testHandler(t, []Export{{ID: "docs", Name: "Documents", Path: root}})
+
+	w := request(h, "GET", "/v1/list?share=docs&limit=200", testToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("first page status=%d body=%s", w.Code, w.Body.String())
+	}
+	var first struct {
+		Entries    []Entry `json:"entries"`
+		NextOffset *int    `json:"next_offset"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &first); err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Entries) != 200 || first.NextOffset == nil || *first.NextOffset != 200 {
+		t.Fatalf("unexpected first page: count=%d cursor=%v", len(first.Entries), first.NextOffset)
+	}
+	w = request(h, "GET", "/v1/list?share=docs&limit=200&offset=200", testToken)
+	var second struct {
+		Entries    []Entry `json:"entries"`
+		NextOffset *int    `json:"next_offset"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &second); err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Entries) != 6 || second.NextOffset != nil {
+		t.Fatalf("unexpected second page: count=%d cursor=%v", len(second.Entries), second.NextOffset)
+	}
+	w = request(h, "GET", "/v1/list?share=docs&path=nested", testToken)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "nested/hello.txt") {
+		t.Fatalf("nested listing status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	w = request(h, "GET", "/v1/download?share=docs&path=nested/hello.txt", testToken)
+	if w.Code != http.StatusOK || w.Body.String() != "abcdef" {
+		t.Fatalf("download status=%d body=%q", w.Code, w.Body.String())
+	}
+	r := httptest.NewRequest("GET", "/v1/download?share=docs&path=nested/hello.txt", nil)
+	r.Header.Set("Authorization", "Bearer "+testToken)
+	r.Header.Set("Range", "bytes=1-3")
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusPartialContent || w.Body.String() != "bcd" {
+		t.Fatalf("range download status=%d body=%q", w.Code, w.Body.String())
+	}
+}
+
+func TestTraversalAndNonFileReadsFailClosed(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("private"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "folder"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	h := testHandler(t, []Export{{ID: "safe", Name: "Safe", Path: root}})
+	bad := []string{
+		"/v1/list?share=safe&path=../",
+		"/v1/list?share=safe&path=../secret.txt",
+		"/v1/list?share=safe&path=folder/../../secret.txt",
+		"/v1/list?share=safe&path=%2Fetc%2Fpasswd",
+		"/v1/list?share=safe&path=folder%5Csecret.txt",
+		"/v1/list?share=safe&path=folder%2F",
+		"/v1/list?share=safe&offset=-1",
+		"/v1/list?share=safe&offset=10001",
+		"/v1/list?share=safe&limit=201",
+		"/v1/download?share=safe&path=folder",
+		"/v1/download?share=safe",
+	}
+	for _, url := range bad {
+		w := request(h, "GET", url, testToken)
+		if w.Code >= 200 && w.Code < 300 {
+			t.Errorf("accepted forbidden path: %s -> %d", url, w.Code)
+		}
+		if strings.Contains(w.Body.String(), "private") {
+			t.Errorf("leaked contents from rejected path: %s", url)
+		}
+	}
+	if runtime.GOOS == "windows" {
+		// Creating Windows symlinks usually requires developer mode/privilege.
+		return
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "escape")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	for _, url := range []string{
+		"/v1/download?share=safe&path=escape/secret.txt",
+		"/v1/list?share=safe&path=escape",
+	} {
+		w := request(h, "GET", url, testToken)
+		if w.Code >= 200 && w.Code < 300 {
+			t.Errorf("escaped export via symlink: %s -> %d", url, w.Code)
+		}
+	}
+}

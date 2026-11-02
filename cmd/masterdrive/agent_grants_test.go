@@ -73,6 +73,21 @@ func TestAgentCLISelectsOnlyOneCredentialMode(t *testing.T) {
 	}
 }
 
+func TestAgentCLIRejectsInvalidShareGrantsWithoutEchoingCredentials(t *testing.T) {
+	exports := []agent.Export{{ID:"docs", Name:"Documents", Path:t.TempDir()}}
+	for _, raw := range []string{
+		`[{"bearer_token":"`+agentGrantDocsToken+`","share_ids":["missing"]}]`,
+		`[{"bearer_token":"`+agentGrantDocsToken+`","share_ids":["docs","docs"]}]`,
+		`[{"bearer_token":"`+agentGrantDocsToken+`","share_ids":["docs"]},{"bearer_token":"`+agentGrantDocsToken+`","share_ids":["docs"]}]`,
+	} {
+		h, err := configuredAgentHandler(exports, agentConfigLookup(map[string]string{"MASTERDRIVE_AGENT_GRANTS_JSON":raw}))
+		if h != nil { _ = h.Close(); t.Fatal("invalid grant was accepted") }
+		if err == nil || strings.Contains(err.Error(), agentGrantDocsToken) {
+			t.Fatalf("invalid grant was accepted or credential leaked: %v", err)
+		}
+	}
+}
+
 func TestAgentCLIScopedGrantsAndLegacyCompatibility(t *testing.T) {
 	docs := t.TempDir()
 	photos := t.TempDir()
@@ -113,7 +128,7 @@ func TestAgentCLIScopedGrantsAndLegacyCompatibility(t *testing.T) {
 	}
 }
 
-func TestAgentCLIInvalidGrantsFailBeforeReadinessMessage(t *testing.T) {
+func TestAgentCLIAmbiguousCredentialsFailBeforeReadinessMessage(t *testing.T) {
 	t.Setenv("MASTERDRIVE_AGENT_TOKEN", "")
 	t.Setenv("MASTERDRIVE_AGENT_GRANTS_JSON", `[{"bearer_token":"sensitive"}]`)
 	var stdout bytes.Buffer

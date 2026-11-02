@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"net/http"
 	"sync/atomic"
 )
@@ -23,17 +24,22 @@ func NewSessionToken() (string, error) {
 }
 
 // RequireSession protects the local browser API, distinct from peer tokens.
-// A one-time fragment token is exchanged for an HttpOnly, same-site session
-// cookie. Only the first successful exchange can redeem the fragment; later
-// requests must use the issued cookie or restart the controller to get a new
-// bootstrap link. Downloads can then use ordinary same-origin links safely.
+// A one-time fragment token is exchanged for an independently generated
+// HttpOnly, same-site session cookie. Only the first successful exchange can
+// redeem the fragment; subsequent requests must use the issued cookie or
+// restart the controller to get a new bootstrap link.
 func RequireSession(secret string, next http.Handler) (http.Handler, error) {
 	if len(secret) < 40 {
 		return nil, errors.New("controller session secret is too short")
 	}
-	const context = "masterdrive-local-cookie-v1:"
-	data := sha256.Sum256([]byte(context + secret))
-	cookieValue := base64.RawURLEncoding.EncodeToString(data[:])
+	// The cookie MUST NOT be derived from the activation secret. Otherwise a
+	// party holding the URL fragment can bypass single-use redemption by
+	// calculating and submitting the cookie directly, even after redemption.
+	var cookieBytes [32]byte
+	if _, err := rand.Read(cookieBytes[:]); err != nil {
+		return nil, fmt.Errorf("generate controller session cookie: %w", err)
+	}
+	cookieValue := base64.RawURLEncoding.EncodeToString(cookieBytes[:])
 	expectedHeader := sha256.Sum256([]byte(secret))
 	expectedCookie := sha256.Sum256([]byte(cookieValue))
 	var redeemed atomic.Bool

@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -119,18 +120,38 @@ func New(store *catalog.Store, tokens map[string]string, client *http.Client) ht
 			return
 		}
 		request.Header.Set("Authorization", "Bearer "+token)
-		request.Header.Set("Accept", "application/json")
+		request.Header.Set("Accept-Encoding", "identity")
+		if download {
+			request.Header.Set("Accept", "application/octet-stream")
+			if requestedRange := r.Header.Get("Range"); requestedRange != "" {
+				if len(requestedRange) > 256 || strings.Contains(requestedRange, ",") || !strings.HasPrefix(requestedRange, "bytes=") {
+					fail(w, http.StatusBadRequest, "invalid_range", "only a single byte range is supported")
+					return
+				}
+				request.Header.Set("Range", requestedRange)
+			}
+		} else {
+			request.Header.Set("Accept", "application/json")
+		}
 		response, err := client.Do(request)
 		if err != nil {
 			fail(w, http.StatusBadGateway, "peer_unavailable", "peer could not be reached")
 			return
 		}
 		defer response.Body.Close()
-		if response.StatusCode != http.StatusOK {
-			fail(w, http.StatusBadGateway, "peer_error", fmt.Sprintf("peer returned HTTP %d", response.StatusCode))
-			return
-		}
 		if download {
+			requestedRange := request.Header.Get("Range")
+			if (requestedRange == "" && response.StatusCode != http.StatusOK) ||
+				(requestedRange != "" && response.StatusCode != http.StatusPartialContent) {
+				fail(w, http.StatusBadGateway, "peer_error", fmt.Sprintf("peer returned unexpected HTTP %d", response.StatusCode))
+				return
+			}
+			// Without an explicit byte count, an early clean EOF cannot be
+			// distinguished from a complete transfer. Fail before sending data.
+			if response.ContentLength < 0 {
+				fail(w, http.StatusBadGateway, "missing_length", "peer did not provide a verifiable transfer length")
+				return
+			}
 			filename := path.Base(r.URL.Query().Get("path"))
 			if filename == "." || filename == "/" || filename == "" {
 				fail(w, http.StatusBadRequest, "bad_path", "a file path is required")
@@ -138,8 +159,26 @@ func New(store *catalog.Store, tokens map[string]string, client *http.Client) ht
 			}
 			w.Header().Set("Content-Type", "application/octet-stream")
 			w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": filename}))
-			w.WriteHeader(http.StatusOK)
-			_, _ = io.Copy(w, response.Body)
+			w.Header().Set("Content-Length", strconv.FormatInt(response.ContentLength, 10))
+			if response.StatusCode == http.StatusPartialContent {
+				contentRange := response.Header.Get("Content-Range")
+				if !strings.HasPrefix(contentRange, "bytes ") {
+					fail(w, http.StatusBadGateway, "invalid_range", "peer did not provide a valid range response")
+					return
+				}
+				w.Header().Set("Content-Range", contentRange)
+			}
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.WriteHeader(response.StatusCode)
+			if copied, err := io.CopyN(w, response.Body, response.ContentLength); err != nil || copied != response.ContentLength {
+				// Headers have been sent; a 502 is no longer possible. Abort the
+				// connection so a client observes a failed/incomplete transfer.
+				panic(http.ErrAbortHandler)
+			}
+			return
+		}
+		if response.StatusCode != http.StatusOK {
+			fail(w, http.StatusBadGateway, "peer_error", fmt.Sprintf("peer returned HTTP %d", response.StatusCode))
 			return
 		}
 		body, err := io.ReadAll(io.LimitReader(response.Body, maxPeerJSON+1))

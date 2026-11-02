@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -94,4 +95,55 @@ func TestDefaultPeerClientDoesNotFollowRedirect(t *testing.T) {
 	w := httptest.NewRecorder()
 	api.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/hosts/"+host.ID+"/shares", nil))
 	if w.Code != http.StatusBadGateway || received.Load() { t.Fatalf("redirect followed=%v, status=%d", received.Load(), w.Code) }
+}
+
+func TestGatewayAbortsTruncatedPeerDownload(t *testing.T) {
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/download" { http.NotFound(w, r); return }
+		w.Header().Set("Content-Length", "100")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("short"))
+	}))
+	defer peer.Close()
+	store, err := catalog.Open(t.TempDir())
+	if err != nil { t.Fatal(err) }
+	host, err := store.Upsert("truncated", peer.URL)
+	if err != nil { t.Fatal(err) }
+	controller := httptest.NewServer(New(store, map[string]string{host.ID: "test-secret"}, nil))
+	defer controller.Close()
+	resp, err := http.Get(controller.URL + "/api/v1/hosts/" + host.ID + "/shares/docs/download?path=test.bin")
+	if err != nil { t.Fatal(err) }
+	defer resp.Body.Close()
+	body, readErr := io.ReadAll(resp.Body)
+	if readErr == nil {
+		t.Fatalf("truncated download was reported as complete: status=%d bytes=%d", resp.StatusCode, len(body))
+	}
+}
+
+func TestGatewayForwardsSingleByteRange(t *testing.T) {
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Range") != "bytes=1-3" { http.Error(w, "range missing", http.StatusBadRequest); return }
+		w.Header().Set("Content-Length", "3")
+		w.Header().Set("Content-Range", "bytes 1-3/6")
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write([]byte("bcd"))
+	}))
+	defer peer.Close()
+	store, err := catalog.Open(t.TempDir())
+	if err != nil { t.Fatal(err) }
+	host, err := store.Upsert("range", peer.URL)
+	if err != nil { t.Fatal(err) }
+	controller := httptest.NewServer(New(store, map[string]string{host.ID: "test-secret"}, nil))
+	defer controller.Close()
+	req, err := http.NewRequest(http.MethodGet, controller.URL+"/api/v1/hosts/"+host.ID+"/shares/docs/download?path=test.bin", nil)
+	if err != nil { t.Fatal(err) }
+	req.Header.Set("Range", "bytes=1-3")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil { t.Fatal(err) }
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil { t.Fatal(err) }
+	if resp.StatusCode != http.StatusPartialContent || string(body) != "bcd" || resp.Header.Get("Content-Range") != "bytes 1-3/6" {
+		t.Fatalf("range status=%d bytes=%q content-range=%q", resp.StatusCode, body, resp.Header.Get("Content-Range"))
+	}
 }

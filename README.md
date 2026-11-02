@@ -4,7 +4,7 @@
 
 MasterDrive is a Windows/Linux storage-network project: connect your own computers and storage servers over a private network, explicitly share selected directories or drives, and browse those locations through a unified interface. The long-term goal is to make a collection of independent disks feel like one coherent storage environment, without concealing where data actually lives.
 
-**Think “Tailscale for hard drives.”** Tailscale or another encrypted private overlay can provide connectivity; MasterDrive provides the storage-specific catalog, permissions, browsing, health, search, and—later—placement and recovery policies. MasterDrive is intended to be transport-agnostic, not a new VPN.
+Tailscale or another encrypted private overlay can provide connectivity; MasterDrive provides the storage-specific catalog, permissions, browsing, health, search, and—later—placement and recovery policies. MasterDrive is intended to be transport-agnostic, not a new VPN.
 
 ## What MasterDrive is building
 

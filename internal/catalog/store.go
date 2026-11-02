@@ -25,11 +25,13 @@ const (
 	catalogVersion = 1
 	maxCatalogBytes = 2 << 20
 	maxHosts = 1000
+	writeLockTimeout = 5 * time.Second
 )
 
 var (
 	ErrNotFound = errors.New("catalog: host not found")
 	ErrInvalid = errors.New("catalog: invalid host")
+	ErrBusy = errors.New("catalog: another writer holds the catalog lock")
 )
 
 // HealthStatus is supplied by a caller; the catalog never measures reachability.
@@ -58,12 +60,20 @@ type diskDocument struct {
 	Hosts []Host `json:"hosts"`
 }
 
-// Store protects in-process access and uses atomic file replacement for each
-// committed edit. Separate processes must not concurrently write the same dir.
+// Store protects in-process access and uses a portable exclusive lock file
+// around the complete read/modify/write operation. Each mutation re-reads
+// disk while holding the lock, so separate CLI processes cannot silently
+// overwrite each other's changes. A process crash may leave a stale lock;
+// operators must verify that no writer is alive before removing it manually.
+// Persistence uses a temporary file and rename, but Go does not guarantee
+// atomic rename on non-Unix systems. Windows crash/recovery needs qualification.
 type Store struct {
 	mu sync.RWMutex
 	path string
 	hosts map[string]Host
+	// True once a state file has been read or written. Losing an established
+	// file must fail closed rather than silently resetting all hosts.
+	established bool
 }
 
 // Open loads a versioned catalog from dir, creating the directory if absent.
@@ -76,11 +86,14 @@ func Open(dir string) (*Store, error) {
 		return nil, fmt.Errorf("catalog: create directory: %w", err)
 	}
 	s := &Store{path: filepath.Join(dir, "hosts.json")}
-	hosts, err := readHosts(s.path, true)
+	hosts, existed, err := readHosts(s.path, true)
 	if err != nil {
 		return nil, err
 	}
 	s.hosts = hosts
+	// Existence is captured by the same open that returned the snapshot.
+	// A separate Stat would race with deletion/replacement after read.
+	s.established = existed
 	return s, nil
 }
 
@@ -90,13 +103,14 @@ func Open(dir string) (*Store, error) {
 // leaves the last valid in-memory state untouched. The caller should surface
 // that error rather than silently reporting stale contents as current.
 //
-// Reload does not make concurrent writers safe: exactly one process should
-// own catalog mutations. Readers may safely Reload during atomic replacement.
+// Concurrent writers are serialized separately by mutate's exclusive lock.
+// Readers may Reload during replacement. Platform read errors (and malformed
+// snapshots) must be surfaced, never silently masked with stale in-memory data.
 func (s *Store) Reload() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	hosts, err := readHosts(s.path, false)
-	if errors.Is(err, os.ErrNotExist) && len(s.hosts) == 0 {
+	hosts, _, err := readHosts(s.path, false)
+	if errors.Is(err, os.ErrNotExist) && !s.established {
 		// A fresh catalog has no file until the first registration.
 		return nil
 	}
@@ -104,50 +118,53 @@ func (s *Store) Reload() error {
 		return err
 	}
 	s.hosts = hosts
+	s.established = true
 	return nil
 }
 
-func readHosts(path string, allowMissing bool) (map[string]Host, error) {
+// readHosts returns existed=true only when it opened a state file. Open uses
+// this flag to remember an established catalog without a separate racy Stat.
+func readHosts(path string, allowMissing bool) (map[string]Host, bool, error) {
 	hosts := make(map[string]Host)
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		if allowMissing {
-			return hosts, nil
+			return hosts, false, nil
 		}
-		return nil, fmt.Errorf("catalog: missing state file: %w", err)
+		return nil, false, fmt.Errorf("catalog: missing state file: %w", err)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("catalog: open: %w", err)
+		return nil, false, fmt.Errorf("catalog: open: %w", err)
 	}
 	defer f.Close()
 	data, err := io.ReadAll(io.LimitReader(f, maxCatalogBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("catalog: read: %w", err)
+		return nil, true, fmt.Errorf("catalog: read: %w", err)
 	}
 	if len(data) > maxCatalogBytes {
-		return nil, fmt.Errorf("catalog: file exceeds size limit")
+		return nil, true, fmt.Errorf("catalog: file exceeds size limit")
 	}
 	var doc diskDocument
 	if err := json.Unmarshal(data, &doc); err != nil {
-		return nil, fmt.Errorf("catalog: invalid JSON: %w", err)
+		return nil, true, fmt.Errorf("catalog: invalid JSON: %w", err)
 	}
 	if doc.Version != catalogVersion {
-		return nil, fmt.Errorf("catalog: unsupported version %d", doc.Version)
+		return nil, true, fmt.Errorf("catalog: unsupported version %d", doc.Version)
 	}
 	if len(doc.Hosts) > maxHosts {
-		return nil, fmt.Errorf("catalog: too many hosts")
+		return nil, true, fmt.Errorf("catalog: too many hosts")
 	}
 	for _, h := range doc.Hosts {
 		canonical, id, err := validateHost(h.Name, h.BaseURL)
 		if err != nil || h.BaseURL != canonical || h.ID != id || !validHealth(h.Health) || h.AddedAt.IsZero() || (h.LastCheckedAt != nil && h.LastCheckedAt.IsZero()) {
-			return nil, fmt.Errorf("catalog: invalid stored host %q", h.ID)
+			return nil, true, fmt.Errorf("catalog: invalid stored host %q", h.ID)
 		}
 		if _, exists := hosts[id]; exists {
-			return nil, fmt.Errorf("catalog: duplicate stored host %q", h.ID)
+			return nil, true, fmt.Errorf("catalog: duplicate stored host %q", h.ID)
 		}
 		hosts[id] = h
 	}
-	return hosts, nil
+	return hosts, true, nil
 }
 
 // Upsert registers or renames a host chosen explicitly by the caller. The ID
@@ -157,41 +174,34 @@ func (s *Store) Upsert(name, baseURL string) (Host, error) {
 	if err != nil {
 		return Host{}, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	copy := clone(s.hosts)
-	h, exists := copy[id]
-	if exists {
-		h.Name = strings.TrimSpace(name)
-	} else {
-		if len(copy) >= maxHosts {
-			return Host{}, fmt.Errorf("catalog: host limit reached")
+	var result Host
+	err = s.mutate(func(current map[string]Host) (map[string]Host, error) {
+		h, exists := current[id]
+		if exists {
+			h.Name = strings.TrimSpace(name)
+		} else {
+			if len(current) >= maxHosts {
+				return nil, fmt.Errorf("catalog: host limit reached")
+			}
+			h = Host{ID: id, Name: strings.TrimSpace(name), BaseURL: canonical, AddedAt: time.Now().UTC(), Health: HealthUnknown}
 		}
-		h = Host{ID: id, Name: strings.TrimSpace(name), BaseURL: canonical, AddedAt: time.Now().UTC(), Health: HealthUnknown}
-	}
-	copy[id] = h
-	if err := s.persist(copy); err != nil {
-		return Host{}, err
-	}
-	s.hosts = copy
-	return h, nil
+		current[id] = h
+		result = h
+		return current, nil
+	})
+	return result, err
 }
 
 // Remove forgets a host from this catalog. It does NOT revoke any remote
 // credential or delete any remote data; those effects need separate authority.
 func (s *Store) Remove(id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.hosts[id]; !ok {
-		return ErrNotFound
-	}
-	copy := clone(s.hosts)
-	delete(copy, id)
-	if err := s.persist(copy); err != nil {
-		return err
-	}
-	s.hosts = copy
-	return nil
+	return s.mutate(func(current map[string]Host) (map[string]Host, error) {
+		if _, ok := current[id]; !ok {
+			return nil, ErrNotFound
+		}
+		delete(current, id)
+		return current, nil
+	})
 }
 
 // Get returns the recorded metadata and whether it exists.
@@ -215,22 +225,73 @@ func (s *Store) SetHealth(id string, status HealthStatus, checkedAt time.Time) e
 	if !validHealth(status) || checkedAt.IsZero() || checkedAt.After(time.Now().Add(time.Minute)) {
 		return fmt.Errorf("%w: invalid health metadata", ErrInvalid)
 	}
+	return s.mutate(func(current map[string]Host) (map[string]Host, error) {
+		h, ok := current[id]
+		if !ok {
+			return nil, ErrNotFound
+		}
+		t := checkedAt.UTC()
+		h.Health = status
+		h.LastCheckedAt = &t
+		current[id] = h
+		return current, nil
+	})
+}
+
+// mutate serializes all writers across processes and refreshes state before
+// applying each change. A failed read or write preserves the in-memory state.
+func (s *Store) mutate(change func(map[string]Host) (map[string]Host, error)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	h, ok := s.hosts[id]
-	if !ok {
-		return ErrNotFound
+	return withWriteLock(s.path+".lock", func() error {
+		current, _, err := readHosts(s.path, !s.established)
+		if err != nil {
+			return err
+		}
+		next, err := change(current)
+		if err != nil {
+			return err
+		}
+		if err := s.persist(next); err != nil {
+			return err
+		}
+		s.hosts = next
+		s.established = true
+		return nil
+	})
+}
+
+// O_EXCL creation is atomic on supported local filesystems on Windows and
+// Unix. Never automatically break a possibly stale lock: doing so could let
+// two live writers commit conflicting snapshots.
+func withWriteLock(lockPath string, update func() error) error {
+	deadline := time.Now().Add(writeLockTimeout)
+	var f *os.File
+	for {
+		var err error
+		f, err = os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("catalog: create write lock: %w", err)
+		}
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("%w: %s (verify all writers have exited before manually clearing a stale lock)", ErrBusy, lockPath)
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
-	copy := clone(s.hosts)
-	t := checkedAt.UTC()
-	h.Health = status
-	h.LastCheckedAt = &t
-	copy[id] = h
-	if err := s.persist(copy); err != nil {
-		return err
+	// A PID and timestamp aid manual recovery after a crash; they are not
+	// trusted for automatically declaring the lock stale.
+	if _, err := fmt.Fprintf(f, "pid=%d acquired=%s\n", os.Getpid(), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		f.Close()
+		os.Remove(lockPath)
+		return fmt.Errorf("catalog: record write lock: %w", err)
 	}
-	s.hosts = copy
-	return nil
+	updateErr := update()
+	closeErr := f.Close()
+	removeErr := os.Remove(lockPath)
+	return errors.Join(updateErr, closeErr, removeErr)
 }
 
 func validHealth(h HealthStatus) bool {

@@ -170,3 +170,104 @@ func TestSnapshotCannotMutateStore(t *testing.T) {
 	got, _ := s.Get(h.ID)
 	if got.Name != "one" || got.LastCheckedAt.IsZero() { t.Fatal("snapshot mutated internal state") }
 }
+
+// Two CLI processes can both open a catalog before either commits. The
+// second must merge the first edit instead of rewriting its stale snapshot.
+func TestIndependentWritersDoNotLoseUpdates(t *testing.T) {
+	dir := t.TempDir()
+	first, err := Open(dir)
+	if err != nil { t.Fatal(err) }
+	second, err := Open(dir)
+	if err != nil { t.Fatal(err) }
+	firstHost, err := first.Upsert("First", "https://first.example")
+	if err != nil { t.Fatal(err) }
+	secondHost, err := second.Upsert("Second", "https://second.example")
+	if err != nil { t.Fatal(err) }
+	third, err := Open(dir)
+	if err != nil { t.Fatal(err) }
+	if got := len(third.List()); got != 2 { t.Fatalf("stale writer erased registration: got %d hosts", got) }
+	if _, exists := third.Get(firstHost.ID); !exists { t.Fatal("first registration lost") }
+	if _, exists := third.Get(secondHost.ID); !exists { t.Fatal("second registration lost") }
+	if err := second.Remove(firstHost.ID); err != nil { t.Fatalf("second writer should re-read first registration before removal: %v", err) }
+	if err := first.Reload(); err != nil { t.Fatal(err) }
+	if _, exists := first.Get(firstHost.ID); exists { t.Fatal("removal not visible to reloader") }
+	if _, exists := first.Get(secondHost.ID); !exists { t.Fatal("removal erased another registration") }
+}
+
+func TestConcurrentIndependentStoresKeepAllHosts(t *testing.T) {
+	dir := t.TempDir()
+	const count = 16
+	stores := make([]*Store, count)
+	for i := range stores {
+		var err error
+		stores[i], err = Open(dir)
+		if err != nil { t.Fatal(err) }
+	}
+	var wg sync.WaitGroup
+	errCh := make(chan error, count)
+	for i := range stores {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, err := stores[i].Upsert(fmt.Sprintf("Host %d", i), fmt.Sprintf("https://host-%d.example", i))
+			errCh <- err
+		}(i)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh { if err != nil { t.Fatal(err) } }
+	fresh, err := Open(dir)
+	if err != nil { t.Fatal(err) }
+	if got := len(fresh.List()); got != count { t.Fatalf("lost concurrent cross-store updates: got %d, want %d", got, count) }
+}
+
+func TestWriteLockFailsClosedWithoutDestroyingState(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil { t.Fatal(err) }
+	h, err := s.Upsert("Safe", "https://safe.example")
+	if err != nil { t.Fatal(err) }
+	lockPath := filepath.Join(dir, "hosts.json.lock")
+	if err := os.WriteFile(lockPath, []byte("simulated active writer"), 0600); err != nil { t.Fatal(err) }
+	if _, err := s.Upsert("Blocked", "https://blocked.example"); !errors.Is(err, ErrBusy) {
+		t.Fatalf("contended mutation must fail closed with ErrBusy: %v", err)
+	}
+	if _, exists := s.Get(h.ID); !exists { t.Fatal("contended mutation changed snapshot") }
+	if _, err := Open(dir); err != nil { t.Fatalf("active write lock must not prevent snapshot reads: %v", err) }
+	if _, err := os.Stat(lockPath); err != nil { t.Fatalf("contended write lock was cleared: %v", err) }
+	if err := os.Remove(lockPath); err != nil { t.Fatal(err) }
+	reloaded, err := Open(dir)
+	if err != nil { t.Fatal(err) }
+	if _, exists := reloaded.Get(h.ID); !exists { t.Fatal("contended lock damaged committed state") }
+}
+
+func TestMissingEstablishedStateCannotBeRecreatedByStaleWriter(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil { t.Fatal(err) }
+	if _, err := s.Upsert("Safe", "https://safe.example"); err != nil { t.Fatal(err) }
+	if err := os.Remove(filepath.Join(dir, "hosts.json")); err != nil { t.Fatal(err) }
+	if _, err := s.Upsert("Other", "https://other.example"); err == nil { t.Fatal("writer silently reset missing established state") }
+	if _, err := os.Stat(filepath.Join(dir, "hosts.json")); !errors.Is(err, os.ErrNotExist) { t.Fatalf("missing state unexpectedly regenerated: %v", err) }
+}
+
+// Existence must be decided by the successful file open, not a later Stat.
+// A file can disappear immediately after the read, but the caller still
+// knows it observed an established catalog and must refuse silent reset.
+func TestReadHostsExistenceIsBoundToOpenedSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil { t.Fatal(err) }
+	if _, err := s.Upsert("Safe", "https://safe.example"); err != nil { t.Fatal(err) }
+	path := filepath.Join(dir, "hosts.json")
+	hosts, existed, err := readHosts(path, true)
+	if err != nil || !existed || len(hosts) != 1 {
+		t.Fatalf("valid snapshot must report established state: existed=%v hosts=%d err=%v", existed, len(hosts), err)
+	}
+	if err := os.Remove(path); err != nil { t.Fatal(err) }
+	if !existed { t.Fatal("successful open lost its existence evidence after removal") }
+	missing, existedNow, err := readHosts(path, true)
+	if err != nil || existedNow || len(missing) != 0 {
+		t.Fatalf("fresh catalog should report absent file: existed=%v hosts=%d err=%v", existedNow, len(missing), err)
+	}
+}

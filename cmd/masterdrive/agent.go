@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"os"
@@ -41,9 +42,12 @@ func runAgent(args []string, stdout io.Writer) error {
 	handler, err := agent.NewHandler(exports, secret)
 	if err != nil { return err }
 	defer handler.Close()
+	listener, err := net.Listen("tcp", *listen)
+	if err != nil { return fmt.Errorf("agent listen: %w", err) }
+	defer listener.Close()
 	fmt.Fprintf(stdout, "MasterDrive agent serving %d explicit read-only shares on %s\n", len(exports), *listen)
 	// The agent requires a bearer token for every request. A private overlay
 	// reverse proxy may preserve its external Host header, so it deliberately
 	// does not impose the browser controller's loopback Host restriction.
-	return http.ListenAndServe(*listen, handler)
+	return http.Serve(listener, handler)
 }

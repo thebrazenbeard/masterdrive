@@ -224,3 +224,116 @@ func TestGatewayRejectsMismatchedPeerByteRange(t *testing.T) {
 		t.Fatalf("gateway rejection must be valid JSON: %v", err)
 	}
 }
+
+func TestGatewayIfRangeRequiresStrongValidator(t *testing.T) {
+	var contacted atomic.Bool
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		contacted.Store(true)
+		http.Error(w, "unexpected proxy request", http.StatusInternalServerError)
+	}))
+	defer peer.Close()
+	store, err := catalog.Open(t.TempDir())
+	if err != nil { t.Fatal(err) }
+	host, err := store.Upsert("conditional", peer.URL)
+	if err != nil { t.Fatal(err) }
+	api := New(store, map[string]string{host.ID: "test-secret"}, nil)
+	for _, value := range []string{"W/\"prior\"", "Mon, 02 Nov 2026 00:00:00 GMT", "no-quotes", "\"newline\ninvalid\"", "\"a\", \"b\""} {
+		t.Run(value, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, "/api/v1/hosts/"+host.ID+"/shares/docs/download?path=test.bin", nil)
+			request.Header.Set("Range", "bytes=2-3")
+			request.Header.Set("If-Range", value)
+			w := httptest.NewRecorder()
+			api.ServeHTTP(w, request)
+			if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "invalid_if_range") {
+				t.Fatalf("unsafe validator accepted: status=%d body=%s", w.Code, w.Body.String())
+			}
+		})
+	}
+	if contacted.Load() { t.Fatal("invalid conditional range contacted peer") }
+}
+
+func TestGatewayIfRangeFailsClosedForChangedOrUnverifiablePeer(t *testing.T) {
+	for _, tc := range []struct {
+		name, etag string
+		status, want int
+		duplicate bool
+	}{
+		{name: "changed representation", status: http.StatusOK, etag: "\"changed\"", want: http.StatusPreconditionFailed},
+		{name: "missing peer validator", status: http.StatusPartialContent, want: http.StatusBadGateway},
+		{name: "different peer validator", status: http.StatusPartialContent, etag: "\"changed\"", want: http.StatusBadGateway},
+		{name: "weak peer validator", status: http.StatusPartialContent, etag: "W/\"prior\"", want: http.StatusBadGateway},
+		{name: "duplicated peer validator", status: http.StatusPartialContent, etag: "\"prior\"", duplicate: true, want: http.StatusBadGateway},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Range") != "bytes=2-3" || r.Header.Get("If-Range") != "\"prior\"" {
+					t.Errorf("conditional headers not forwarded: %+v", r.Header)
+				}
+				w.Header().Set("Content-Length", "2")
+				w.Header().Set("ETag", tc.etag)
+				if tc.duplicate { w.Header().Add("ETag", tc.etag) }
+				if tc.status == http.StatusPartialContent { w.Header().Set("Content-Range", "bytes 2-3/4") }
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte("cd"))
+			}))
+			defer peer.Close()
+			store, err := catalog.Open(t.TempDir())
+			if err != nil { t.Fatal(err) }
+			host, err := store.Upsert("conditional", peer.URL)
+			if err != nil { t.Fatal(err) }
+			api := New(store, map[string]string{host.ID: "test-secret"}, nil)
+			request := httptest.NewRequest(http.MethodGet, "/api/v1/hosts/"+host.ID+"/shares/docs/download?path=test.bin", nil)
+			request.Header.Set("Range", "bytes=2-3")
+			request.Header.Set("If-Range", "\"prior\"")
+			w := httptest.NewRecorder()
+			api.ServeHTTP(w, request)
+			if w.Code != tc.want || w.Header().Get("Content-Disposition") != "" || w.Header().Get("ETag") != "" {
+				t.Fatalf("unsafe resume: status=%d want=%d headers=%v body=%s", w.Code, tc.want, w.Header(), w.Body.String())
+			}
+		})
+	}
+}
+
+func TestGatewayIfRangeAcceptsVerifiedStrongPeerTag(t *testing.T) {
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("If-Range") != "\"stable-content-sha256\"" {
+			t.Errorf("conditional tag not forwarded: %q", r.Header.Get("If-Range"))
+		}
+		w.Header().Set("ETag", "\"stable-content-sha256\"")
+		w.Header().Set("Content-Length", "2")
+		w.Header().Set("Content-Range", "bytes 2-3/4")
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write([]byte("cd"))
+	}))
+	defer peer.Close()
+	store, err := catalog.Open(t.TempDir())
+	if err != nil { t.Fatal(err) }
+	host, err := store.Upsert("conditional", peer.URL)
+	if err != nil { t.Fatal(err) }
+	api := New(store, map[string]string{host.ID: "test-secret"}, nil)
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/hosts/"+host.ID+"/shares/docs/download?path=test.bin", nil)
+	request.Header.Set("Range", "bytes=2-3")
+	request.Header.Set("If-Range", "\"stable-content-sha256\"")
+	w := httptest.NewRecorder()
+	api.ServeHTTP(w, request)
+	if w.Code != http.StatusPartialContent || w.Body.String() != "cd" || w.Header().Get("ETag") != "\"stable-content-sha256\"" {
+		t.Fatalf("validated range failed: status=%d body=%q headers=%v", w.Code, w.Body.String(), w.Header())
+	}
+}
+
+func TestStrongETagValidation(t *testing.T) {
+	for _, tc := range []struct { value string; want bool }{
+		{"\"sha256-sample\"", true},
+		{"\"\"", true},
+		{"W/\"sha256-sample\"", false},
+		{"\"a\", \"b\"", false},
+		{"\"contains space\"", false},
+		{"\"contains\"quote\"", false},
+		{"\"has\\tab\"", true},
+		{"\"has\x7fcontrol\"", false},
+	} {
+		if got := validStrongETag(tc.value); got != tc.want {
+			t.Errorf("validator=%q got=%t want=%t", tc.value, got, tc.want)
+		}
+	}
+}

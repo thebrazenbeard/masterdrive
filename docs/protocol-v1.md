@@ -48,7 +48,7 @@ Entry shape in the Go implementation:
 | `GET /api/v1/hosts/{host}/shares/{share}/entries?path=...&limit=...&offset=...` | Forwards peer `/v1/list`; same listing schema |
 | `GET /api/v1/hosts/{host}/shares/{share}/download?path=...` | Forwards peer `/v1/download`; may pass one `Range: bytes=...` header; streams with checked advertised length |
 
-The controller explicitly refuses to proxy unregistered host IDs, and it does not expose `add-host`, `remove-host`, arbitrary URL fetch, uploads, or mutation over HTTP. Host add/remove are local CLI commands. The gateway currently requires an in-memory token map keyed by catalog-generated host IDs; absent token returns `403 peer_token_missing`. `status: "not_checked"` is intentional: hosts are **not continuously probed**.
+The controller explicitly refuses to proxy unregistered host IDs, and it does not expose `add-host`, `remove-host`, arbitrary URL fetch, uploads, or mutation over HTTP. Host add/remove are local CLI commands. The gateway reloads catalog changes from disk on API reads, but its in-memory peer token map is only read from `MASTERDRIVE_PEER_TOKENS_JSON` at startup. After adding a peer, restart the controller with its token or it will return `403 peer_token_missing`. Catalog removal is not remote credential revocation. `status: "not_checked"` is intentional: hosts are **not continuously probed**.
 
 Controller errors use:
 

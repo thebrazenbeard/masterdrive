@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -55,9 +56,15 @@ func run(args []string, stdout io.Writer) error {
 		if err != nil { return err }
 		mux.Handle("/api/v1/", api)
 		mux.Handle("/", http.FileServer(http.Dir(*webDir)))
+		// Bind before printing the one-time session URL. If another local
+		// process already owns the port, emitting the URL is misleading and
+		// could invite the user to open it in that unrelated process.
+		listener, err := net.Listen("tcp", *listen)
+		if err != nil { return fmt.Errorf("controller listen: %w", err) }
+		defer listener.Close()
 		fmt.Fprintf(stdout, "MasterDrive local controller: http://%s/#session=%s\n", *listen, session)
 		fmt.Fprintln(stdout, "Open this local link once; it activates a browser session without exposing peer credentials.")
-		return http.ListenAndServe(*listen, server.RequireLoopbackHost(mux))
+		return http.Serve(listener, server.RequireLoopbackHost(mux))
 	case "add-host":
 		flags := flag.NewFlagSet("add-host", flag.ContinueOnError)
 		flags.SetOutput(io.Discard)

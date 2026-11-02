@@ -159,9 +159,36 @@ finally {
             }
         } finally { $process.Dispose() }
     }
-    $safePrefix = Join-Path $tempParent 'masterdrive-smoke-'
-    if ([IO.Path]::GetFullPath($tempPath).StartsWith($safePrefix,
-            [StringComparison]::OrdinalIgnoreCase)) {
-        Remove-Item -LiteralPath $tempPath -Recurse -Force -ErrorAction Stop
+    $fullPath = [IO.Path]::GetFullPath($tempPath)
+    $leaf = [IO.Path]::GetFileName($fullPath)
+    $expectedParent = [IO.Path]::GetFullPath($tempParent).TrimEnd('\', '/')
+    $actualParent = [IO.Path]::GetDirectoryName($fullPath).TrimEnd('\', '/')
+    if ($actualParent -ne $expectedParent -or $leaf -cnotmatch '^masterdrive-smoke-[0-9a-f]{32}$') {
+        throw 'Refusing to clean an unexpected smoke-test directory.'
+    }
+    # Do not use -Recurse. On Windows a nested reparse point could otherwise
+    # redirect cleanup outside the generated temporary fixture.
+    $expectedFiles = @(
+        (Join-Path $fullPath 'export\hello.txt'),
+        (Join-Path $fullPath 'state\hosts.json'),
+        (Join-Path $fullPath 'state\hosts.json.lock'),
+        (Join-Path $fullPath 'masterdrive.exe'),
+        (Join-Path $fullPath 'downloaded.txt')
+    )
+    foreach ($filePath in $expectedFiles) {
+        if ([IO.File]::Exists($filePath)) {
+            if (([IO.File]::GetAttributes($filePath) -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw 'Refusing to remove a reparse-point fixture file.'
+            }
+            [IO.File]::Delete($filePath)
+        }
+    }
+    foreach ($directoryPath in @((Join-Path $fullPath 'export'), (Join-Path $fullPath 'state'), $fullPath)) {
+        if ([IO.Directory]::Exists($directoryPath)) {
+            if (([IO.File]::GetAttributes($directoryPath) -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw 'Refusing to remove a reparse-point fixture directory.'
+            }
+            [IO.Directory]::Delete($directoryPath, $false)
+        }
     }
 }

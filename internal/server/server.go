@@ -127,12 +127,26 @@ func New(store *catalog.Store, tokens map[string]string, client *http.Client) ht
 		}
 		request.Header.Set("Authorization", "Bearer "+token)
 		request.Header.Set("Accept-Encoding", "identity")
+		// A caller may assemble independent range responses only if the peer
+		// offers a strong representation validator. A size/modtime guess is not
+		// a strong ETag, and this controller must not invent one.
+		var ifRange string
 		if download {
 			request.Header.Set("Accept", "application/octet-stream")
 			if requestedRange := r.Header.Get("Range"); requestedRange != "" {
 				if len(requestedRange) > 256 || strings.Contains(requestedRange, ",") || !strings.HasPrefix(requestedRange, "bytes=") {
 					fail(w, http.StatusBadRequest, "invalid_range", "only a single byte range is supported")
 					return
+				}
+				if values := r.Header.Values("If-Range"); len(values) != 0 {
+					// HTTP dates and weak entity tags are not safe range-version
+					// evidence for mutable files exposed by MasterDrive.
+					if len(values) != 1 || !validStrongETag(values[0]) {
+						fail(w, http.StatusBadRequest, "invalid_if_range", "a single strong ETag is required for conditional ranges")
+						return
+					}
+					ifRange = values[0]
+					request.Header.Set("If-Range", ifRange)
 				}
 				request.Header.Set("Range", requestedRange)
 			}
@@ -151,9 +165,22 @@ func New(store *catalog.Store, tokens map[string]string, client *http.Client) ht
 				fail(w, http.StatusBadGateway, "unexpected_encoding", "peer returned a transformed file representation")
 				return
 			}
+			// If-Range normally falls back to HTTP 200 when a representation
+			// changed. The gateway intentionally fails closed: delivering a full
+			// body to a range-assembling client can silently corrupt its output.
+			if ifRange != "" && response.StatusCode == http.StatusOK {
+				fail(w, http.StatusPreconditionFailed, "representation_changed", "the previous file version cannot be resumed")
+				return
+			}
 			if (requestedRange == "" && response.StatusCode != http.StatusOK) ||
 				(requestedRange != "" && response.StatusCode != http.StatusPartialContent) {
 				fail(w, http.StatusBadGateway, "peer_error", fmt.Sprintf("peer returned unexpected HTTP %d", response.StatusCode))
+				return
+			}
+			peerETags := response.Header.Values("ETag")
+			peerETag := response.Header.Get("ETag")
+			if ifRange != "" && (len(peerETags) != 1 || peerETag != ifRange) {
+				fail(w, http.StatusBadGateway, "unverified_range", "peer did not confirm the requested file version")
 				return
 			}
 			// Without an explicit byte count, an early clean EOF cannot be
@@ -178,6 +205,11 @@ func New(store *catalog.Store, tokens map[string]string, client *http.Client) ht
 			w.Header().Set("Content-Type", "application/octet-stream")
 			w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": filename}))
 			w.Header().Set("Content-Length", strconv.FormatInt(response.ContentLength, 10))
+			// Forward only syntactically strong peer validators. Until an agent
+			// provides them, downloads advertise no resumption guarantee.
+			if len(peerETags) == 1 && validStrongETag(peerETag) {
+				w.Header().Set("ETag", peerETag)
+			}
 			if contentRange != "" {
 				w.Header().Set("Content-Range", contentRange)
 			}
@@ -203,6 +235,20 @@ func New(store *catalog.Store, tokens map[string]string, client *http.Client) ht
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(body)
 	})
+}
+
+// validStrongETag conservatively recognizes the RFC 9110 strong entity-tag
+// syntax. Weak tags, dates, comma-separated validators and controls fail.
+func validStrongETag(value string) bool {
+	if len(value) < 2 || len(value) > 256 || value[0] != '"' || value[len(value)-1] != '"' {
+		return false
+	}
+	for i := 1; i < len(value)-1; i++ {
+		if value[i] < '!' || value[i] == '"' || value[i] == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 // validSingleRangeResponse checks that a peer's 206 covers exactly the bytes

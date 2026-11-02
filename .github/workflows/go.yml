@@ -37,3 +37,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/smoke-local.ps1
+      - name: Local-process smoke (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: .\scripts\smoke-local-winps51.ps1

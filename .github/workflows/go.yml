@@ -1,0 +1,23 @@
+name: Go verification
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Unit and integration tests
+        run: go test -race ./...
+      - name: Static analysis
+        run: go vet ./...

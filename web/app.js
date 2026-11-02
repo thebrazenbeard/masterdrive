@@ -20,7 +20,7 @@ function apiError(response, payload) {
   const code = payload?.error?.code || payload?.code || payload?.error_code;
   if (response.status === 401 || code === 'session_invalid' || code === 'session_required') return 'Access denied. Open the session link from your MasterDrive controller.';
   if (response.status === 403 && code === 'peer_token_missing') return 'This device needs a peer credential configured on the controller before its files can be accessed.';
-  if (response.status === 403) return 'This device denied access. Check its pairing, credentials, and share permissions.';
+  if (response.status === 403) return 'This device denied access. Check its source credential and share permissions.';
   if (response.status === 404) return 'This drive or folder is no longer available.';
   if (response.status === 502 || response.status === 503 || response.status === 504) return 'The selected device is unavailable. Check its connection to the mesh.';
   return `The mesh request failed (HTTP ${response.status}).`;
@@ -107,7 +107,7 @@ function renderHosts() {
   const online = state.hosts.filter(host => String(host.status).toLowerCase() === 'online').length;
   ui['mesh-summary'].textContent = `${online} online · ${state.hosts.length} devices`;
   if (!state.hosts.length) {
-    list.append(node('p', 'sidebar-placeholder', 'No paired devices yet'));
+    list.append(node('p', 'sidebar-placeholder', 'No registered devices yet'));
     return;
   }
   for (const host of state.hosts) {

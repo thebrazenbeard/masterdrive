@@ -37,6 +37,14 @@ func New(store *catalog.Store, tokens map[string]string, client *http.Client) ht
 			return http.ErrUseLastResponse
 		}}
 	}
+	// Always disable redirects, including for injected test/embedder clients.
+	// A 30x from a peer must never forward its share credential to a new URL.
+	// Copy the client to avoid mutating a caller-owned shared instance.
+	protectedClient := *client
+	protectedClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	client = &protectedClient
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")

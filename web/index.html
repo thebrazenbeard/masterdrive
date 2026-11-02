@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="description" content="MasterDrive — a private mesh for your drives.">
+  <title>MasterDrive · Your storage, connected</title>
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to files</a>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Storage mesh">
+      <div class="brand"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span>master<span class="brand-accent">drive</span></span></div>
+      <div class="sidebar-body">
+        <div class="section-heading"><span>YOUR MESH</span><span id="host-count" class="count">0</span></div>
+        <nav id="host-list" aria-label="Connected devices"><div class="sidebar-placeholder">Discovering your devices…</div></nav>
+        <div class="section-heading shares-heading"><span>SHARED DRIVES</span><span id="share-count" class="count">0</span></div>
+        <nav id="share-list" aria-label="Drives on selected device"><div class="sidebar-placeholder">Choose a device</div></nav>
+      </div>
+      <div class="sidebar-footer"><span class="pulse" aria-hidden="true"></span><div><strong>Private by design</strong><small>Only explicitly shared drives appear</small></div></div>
+    </aside>
+    <div class="workspace">
+      <header class="topbar"><div><span class="eyebrow">YOUR PRIVATE STORAGE MESH</span><h1>One view. Every drive.</h1></div><div class="topbar-actions"><span class="connected-pill"><span class="signal-dot" aria-hidden="true"></span><span id="mesh-summary">Connecting…</span></span><button id="refresh" class="secondary-button" type="button" title="Refresh devices and current folder"><span aria-hidden="true">↻</span> Refresh</button></div></header>
+      <main id="main" tabindex="-1">
+        <div class="overview"><div><div class="overview-kicker">MASTERDRIVE / EXPLORER</div><h2 id="location-title">Your storage universe</h2><p id="location-subtitle">Select a device and a shared drive to explore files across your mesh.</p></div><div class="overview-orbit" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="orbit-core">✦</div></div></div>
+        <section class="file-panel" aria-label="Files and folders">
+          <div class="panel-toolbar"><nav id="breadcrumbs" aria-label="Current folder" class="breadcrumbs"><span>All devices</span></nav><div class="toolbar-actions"><label class="search-box"><span aria-hidden="true">⌕</span><span class="sr-only">Filter current folder</span><input id="filter" type="search" placeholder="Filter this folder" autocomplete="off"></label></div></div>
+          <div class="table-head" aria-hidden="true"><span>NAME</span><span>SIZE</span><span>MODIFIED</span><span></span></div>
+          <div id="file-list" class="file-list" aria-live="polite" aria-busy="false"><div class="empty-state"><div class="empty-symbol" aria-hidden="true">⌁</div><h3>Every drive. One destination.</h3><p>Choose a device from the left to see its shared storage.</p></div></div>
+          <div class="panel-bottom"><span id="item-count">No folder selected</span><span>Read-only explorer · v0.1</span></div>
+        </section>
+        <p class="privacy-note"><span aria-hidden="true">◈</span> MasterDrive never exposes drives automatically. Device owners choose what to share.</p>
+      </main>
+    </div>
+  </div>
+</body>
+</html>

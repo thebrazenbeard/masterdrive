@@ -1,0 +1,14 @@
+# Local runtime registry (never commit credentials or device state)
+.masterdrive/
+hosts.json
+hosts.json.tmp
+
+# Build output
+/bin/
+*.exe
+*.test
+coverage.out
+
+# Editor and OS noise
+.DS_Store
+Thumbs.db

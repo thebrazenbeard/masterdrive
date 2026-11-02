@@ -65,7 +65,7 @@ func Capture(ctx context.Context, source io.Reader, limit int64) (*Sealed, error
 // Its unsalted digest discloses equality and permits known-content guessing;
 // do not expose it on sensitive shares without a documented privacy policy.
 func (s *Sealed) ETag() string { return s.etag }
-func (s *Sealed) Size() int64 { return int64(len(s.data)) }
+func (s *Sealed) Size() int64  { return int64(len(s.data)) }
 
 // Open succeeds only for the exact sealed representation. Each reader has
 // independent seek position. There is no mutable reader handle to the source.
@@ -77,16 +77,30 @@ func (s *Sealed) Open(expectedETag string) (io.ReadSeekCloser, error) {
 }
 
 type sealedReader struct{ *bytes.Reader }
+
 func (*sealedReader) Close() error { return nil }
 
 type cancelReader struct {
-	ctx context.Context
-	reader io.Reader
+	ctx        context.Context
+	reader     io.Reader
+	emptyReads int
 }
 
 func (r *cancelReader) Read(p []byte) (int, error) {
-	if err := r.ctx.Err(); err != nil { return 0, err }
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
 	n, err := r.reader.Read(p)
-	if canceled := r.ctx.Err(); canceled != nil { return 0, canceled }
+	if canceled := r.ctx.Err(); canceled != nil {
+		return 0, canceled
+	}
+	if len(p) > 0 && n == 0 && err == nil {
+		r.emptyReads++
+		if r.emptyReads >= 100 {
+			return 0, io.ErrNoProgress
+		}
+	} else if n > 0 {
+		r.emptyReads = 0
+	}
 	return n, err
 }

@@ -145,21 +145,34 @@ func New(store *catalog.Store, tokens map[string]string, client *http.Client) ht
 		var ifRange string
 		if download {
 			request.Header.Set("Accept", "application/octet-stream")
-			if requestedRange := r.Header.Get("Range"); requestedRange != "" {
+			ranges := r.Header.Values("Range")
+			validators := r.Header.Values("If-Range")
+			if len(ranges) > 1 || (len(ranges) == 1 && ranges[0] == "") {
+				fail(w, http.StatusBadRequest, "invalid_range", "exactly one nonempty byte range is allowed")
+				return
+			}
+			if len(ranges) == 0 && len(validators) != 0 {
+				fail(w, http.StatusBadRequest, "invalid_if_range", "If-Range requires a byte range")
+				return
+			}
+			if len(ranges) == 1 {
+				requestedRange := ranges[0]
 				if len(requestedRange) > 256 || strings.Contains(requestedRange, ",") || !strings.HasPrefix(requestedRange, "bytes=") {
 					fail(w, http.StatusBadRequest, "invalid_range", "only a single byte range is supported")
 					return
 				}
-				if values := r.Header.Values("If-Range"); len(values) != 0 {
-					// HTTP dates and weak entity tags are not safe range-version
-					// evidence for mutable files exposed by MasterDrive.
-					if len(values) != 1 || !validStrongETag(values[0]) {
-						fail(w, http.StatusBadRequest, "invalid_if_range", "a single strong ETag is required for conditional ranges")
-						return
-					}
-					ifRange = values[0]
-					request.Header.Set("If-Range", ifRange)
+				// Refuse unpinned partial reads even if a peer offers a range.
+				// A range-assembling client must already know a strong version.
+				if len(validators) == 0 {
+					fail(w, http.StatusPreconditionRequired, "range_not_pinned", "a strong If-Range ETag is required")
+					return
 				}
+				if len(validators) != 1 || !validStrongETag(validators[0]) {
+					fail(w, http.StatusBadRequest, "invalid_if_range", "a single strong ETag is required for conditional ranges")
+					return
+				}
+				ifRange = validators[0]
+				request.Header.Set("If-Range", ifRange)
 				request.Header.Set("Range", requestedRange)
 			}
 		} else {
@@ -221,11 +234,11 @@ func New(store *catalog.Store, tokens map[string]string, client *http.Client) ht
 			// provides them, downloads advertise no resumption guarantee.
 			if len(peerETags) == 1 && validStrongETag(peerETag) {
 				w.Header().Set("ETag", peerETag)
+				w.Header().Set("Accept-Ranges", "bytes")
 			}
 			if contentRange != "" {
 				w.Header().Set("Content-Range", contentRange)
 			}
-			w.Header().Set("Accept-Ranges", "bytes")
 			w.WriteHeader(response.StatusCode)
 			if copied, err := io.CopyN(w, response.Body, response.ContentLength); err != nil || copied != response.ContentLength {
 				// Headers have been sent; a 502 is no longer possible. Abort the

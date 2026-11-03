@@ -175,6 +175,7 @@ func TestSecurityGatewayRejectsUntrustedRedirectAndMalformedRange(t *testing.T) 
 		t.Run("range="+contentRange, func(t *testing.T) {
 			badPeer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if contentRange != "" { w.Header().Set("Content-Range", contentRange) }
+				w.Header().Set("ETag", "\"fixture-v1\"")
 				w.Header().Set("Content-Length", "3")
 				w.WriteHeader(http.StatusPartialContent)
 				_, _ = w.Write([]byte("bad"))
@@ -184,6 +185,7 @@ func TestSecurityGatewayRejectsUntrustedRedirectAndMalformedRange(t *testing.T) 
 			if err != nil { t.Fatal(err) }
 			request := httptest.NewRequest(http.MethodGet, "/api/v1/hosts/"+badHost.ID+"/shares/approved/download?path=permitted.txt", nil)
 			request.Header.Set("Range", "bytes=1-3")
+			request.Header.Set("If-Range", "\"fixture-v1\"")
 			w = httptest.NewRecorder()
 			server.New(store, map[string]string{badHost.ID: securityFixtureToken}, nil).ServeHTTP(w, request)
 			if w.Code != http.StatusBadGateway { t.Fatalf("mismatched range %q accepted: HTTP %d", contentRange, w.Code) }

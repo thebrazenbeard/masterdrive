@@ -173,7 +173,7 @@ func New(store *catalog.Store, tokens map[string]string, client *http.Client) ht
 		defer response.Body.Close()
 		if download {
 			requestedRange := request.Header.Get("Range")
-			if encoding := response.Header.Get("Content-Encoding"); encoding != "" && !strings.EqualFold(encoding, "identity") {
+			if encodings := response.Header.Values("Content-Encoding"); len(encodings) > 1 || (len(encodings) == 1 && !strings.EqualFold(encodings[0], "identity")) {
 				fail(w, http.StatusBadGateway, "unexpected_encoding", "peer returned a transformed file representation")
 				return
 			}

@@ -158,6 +158,14 @@ func TestReadRangeAndStableETag(t *testing.T) {
 	if w.Code != http.StatusOK || w.Body.String() != "abcdef" {
 		t.Errorf("failed If-Range must ignore otherwise unsupported multipart range: status=%d body=%q",w.Code,w.Body.String())
 	}
+	w=call(h,http.MethodGet,local(testFile),map[string]string{"Range":"bytes=0-1,3-4","If-Range":`"version-1",suffix`},nil)
+	if w.Code != http.StatusOK || w.Body.String() != "abcdef" {
+		t.Errorf("malformed trailing If-Range suffix must not bypass single-range policy: status=%d body=%q",w.Code,w.Body.String())
+	}
+	w=call(h,http.MethodGet,local(testFile),map[string]string{"Range":"bytes=0-1,3-4","If-Range":` "version-1" `},nil)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("matching If-Range with whitespace must still reject multipart range: status=%d",w.Code)
+	}
 }
 
 func TestOfflineStaleAndNoUnversionedFallback(t *testing.T) {

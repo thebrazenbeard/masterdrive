@@ -190,6 +190,12 @@ func TestSealedBytesRemainIdenticalAcrossIndependentWebDAVRanges(t *testing.T) {
 	if stale.Code != http.StatusOK || stale.Body.String() != expected {
 		t.Fatalf("failed If-Range must ignore even unsupported multipart Range: status=%d body=%q", stale.Code, stale.Body.String())
 	}
+	stale = seamRequest(t, h, http.MethodGet, "/"+seamFile, map[string]string{
+		"Range": "bytes=0-1,3-4", "If-Range": etag + ",suffix",
+	})
+	if stale.Code != http.StatusOK || stale.Body.String() != expected {
+		t.Fatalf("malformed If-Range must not yield multipart 206: status=%d body=%q", stale.Code, stale.Body.String())
+	}
 	stale = seamRequest(t, h, http.MethodGet, "/"+seamFile, map[string]string{"If-Match": `"other-version"`})
 	if stale.Code != http.StatusPreconditionFailed || stale.Body.String() == expected {
 		t.Fatalf("stale If-Match status=%d body=%q", stale.Code, stale.Body.String())

@@ -214,6 +214,7 @@ func validStrongETag(tag string) bool {
 // to ignore after a failed If-Range validator. Keep this aligned with
 // net/http.ServeContent's strong-ETag and HTTP-date validator handling.
 func ifRangeMatches(value, etag string, modified time.Time) bool {
+	value = strings.TrimSpace(value) // RFC field-value optional whitespace.
 	if value == etag {
 		return true
 	}
@@ -236,8 +237,13 @@ func (h *Handler) read(w http.ResponseWriter, r *http.Request, key Key) {
 	}
 	if requested := r.Header.Get("Range"); requested != "" {
 		validator := r.Header.Get("If-Range")
-		if (validator == "" || ifRangeMatches(validator, meta.StrongETag, meta.ModifiedAt)) &&
-			(len(requested) > 256 || !strings.HasPrefix(requested, "bytes=") || strings.Contains(requested, ",")) {
+		if validator != "" && !ifRangeMatches(validator, meta.StrongETag, meta.ModifiedAt) {
+			// RFC 9110 requires ignoring Range after a failed If-Range.
+			// Remove it explicitly: ServeContent's ETag parser accepts some
+			// malformed trailing suffixes which our strict check rejects.
+			r = r.Clone(r.Context())
+			r.Header.Del("Range")
+		} else if len(requested) > 256 || !strings.HasPrefix(requested, "bytes=") || strings.Contains(requested, ",") {
 			http.Error(w, "only a single byte range is supported", http.StatusBadRequest)
 			return
 		}

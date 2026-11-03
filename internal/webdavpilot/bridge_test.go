@@ -170,6 +170,10 @@ func TestReadRangeAndStableETag(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("matching If-Range with whitespace must still reject multipart range: status=%d",w.Code)
 	}
+	w=call(h,http.MethodGet,local(testFile),map[string]string{"Range":"bytes=0-1,3-4","If-Range":"\u00a0\"version-1\"\u00a0"},nil)
+	if w.Code != http.StatusOK || w.Body.String() != "abcdef" {
+		t.Errorf("non-ASCII whitespace must not make If-Range match: status=%d body=%q",w.Code,w.Body.String())
+	}
 }
 
 func TestOfflineStaleAndNoUnversionedFallback(t *testing.T) {

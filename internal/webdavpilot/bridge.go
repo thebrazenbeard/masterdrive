@@ -214,7 +214,9 @@ func validStrongETag(tag string) bool {
 // to ignore after a failed If-Range validator. Keep this aligned with
 // net/http.ServeContent's strong-ETag and HTTP-date validator handling.
 func ifRangeMatches(value, etag string, modified time.Time) bool {
-	value = strings.TrimSpace(value) // RFC field-value optional whitespace.
+	// Mirror net/textproto's ASCII field-value trimming. Unicode whitespace
+	// must not make a malformed validator match when ServeContent rejects it.
+	value = strings.Trim(value, " \t\r\n")
 	if value == etag {
 		return true
 	}

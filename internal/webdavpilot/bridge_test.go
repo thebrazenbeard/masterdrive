@@ -142,13 +142,13 @@ func TestReadRangeAndStableETag(t *testing.T) {
 	if w.Code != http.StatusOK || w.Body.Len()!=0 || w.Header().Get("Content-Length")!="6" { t.Fatalf("HEAD: %d %q",w.Code,w.Body.String()) }
 	w=call(h,http.MethodGet,local(testFile),map[string]string{"Range":"bytes=2-4","If-Range":`"version-1"`},nil)
 	if w.Code != http.StatusPartialContent || w.Body.String() != "cde" || w.Header().Get("Content-Range") != "bytes 2-4/6" { t.Fatalf("range %d %q %v",w.Code,w.Body.String(),w.Header()) }
-	for _, hdr := range []map[string]string{
-		{"Range":"bytes=1-2,4-5"},
-		{"Range":"bytes=0-1","If-Range":`"different"`},
-		{"Range":"bytes=0-1","If-Range":"Mon, 02 Nov 2026 10:00:00 GMT"},
-	} {
-		w=call(h,http.MethodGet,local(testFile),hdr,nil)
-		if w.Code == http.StatusOK || w.Code == http.StatusPartialContent { t.Errorf("unsafe range accepted %+v: %d",hdr,w.Code) }
+	w=call(h,http.MethodGet,local(testFile),map[string]string{"Range":"bytes=1-2,4-5"},nil)
+	if w.Code == http.StatusOK || w.Code == http.StatusPartialContent { t.Errorf("multipart range accepted: %d",w.Code) }
+	for _, validator := range []string{`"different"`, "Sun, 01 Nov 2026 10:00:00 GMT"} {
+		w=call(h,http.MethodGet,local(testFile),map[string]string{"Range":"bytes=0-1","If-Range":validator},nil)
+		if w.Code != http.StatusOK || w.Body.String() != "abcdef" || w.Header().Get("ETag") != `"version-1"` {
+			t.Errorf("failed If-Range should return full representation, validator=%q status=%d body=%q",validator,w.Code,w.Body.String())
+		}
 	}
 }
 

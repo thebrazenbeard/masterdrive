@@ -225,11 +225,10 @@ func (h *Handler) read(w http.ResponseWriter, r *http.Request, key Key) {
 			http.Error(w, "only a single byte range is supported", http.StatusBadRequest)
 			return
 		}
-		if tag := r.Header.Get("If-Range"); tag != "" && (!validStrongETag(tag) || tag != meta.StrongETag) {
-			http.Error(w, "file version changed", http.StatusPreconditionFailed)
-			return
-		}
 	}
+	// ServeContent implements RFC 9110 If-Range: a failed validator causes
+	// Range to be ignored and the full selected representation to be served.
+	// In particular, If-Range mismatch is not an If-Match precondition failure.
 	reader, err := h.backend.OpenSnapshot(r.Context(), key, meta.StrongETag)
 	if err != nil { fail(w, err); return }
 	defer reader.Close()

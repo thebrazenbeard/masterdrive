@@ -26,6 +26,10 @@ const (
 	maxCatalogBytes = 2 << 20
 	maxHosts = 1000
 	writeLockTimeout = 5 * time.Second
+	// Native Windows stress testing observed transient CREATE_NEW access
+	// denials amid concurrent lock creation/removal. Retry narrowly and briefly;
+	// a persistent permission failure must still be returned as permission.
+	writeLockWindowsDeniedRetry = 300 * time.Millisecond
 )
 
 var (
@@ -266,6 +270,7 @@ func (s *Store) mutate(change func(map[string]Host) (map[string]Host, error)) er
 // two live writers commit conflicting snapshots.
 func withWriteLock(lockPath string, update func() error) error {
 	deadline := time.Now().Add(writeLockTimeout)
+	var firstWindowsDenied time.Time
 	var f *os.File
 	for {
 		var err error
@@ -273,9 +278,24 @@ func withWriteLock(lockPath string, update func() error) error {
 		if err == nil {
 			break
 		}
+		if retryWindowsLockCreateDenied(lockPath, err) {
+			if firstWindowsDenied.IsZero() {
+				firstWindowsDenied = time.Now()
+			}
+			if time.Since(firstWindowsDenied) < writeLockWindowsDeniedRetry && time.Now().Before(deadline) {
+				time.Sleep(5 * time.Millisecond)
+				continue
+			}
+			// Do not turn a permanent ACL/permissions error into ErrBusy.
+			return fmt.Errorf("catalog: create write lock: %w", err)
+		}
 		if !errors.Is(err, os.ErrExist) {
 			return fmt.Errorf("catalog: create write lock: %w", err)
 		}
+		// An observed existing lock breaks a preceding access-denied streak.
+		// A later unlink race gets its own short retry window, while the
+		// overall lock acquisition remains bounded by writeLockTimeout.
+		firstWindowsDenied = time.Time{}
 		if !time.Now().Before(deadline) {
 			return fmt.Errorf("%w: %s (verify all writers have exited before manually clearing a stale lock)", ErrBusy, lockPath)
 		}

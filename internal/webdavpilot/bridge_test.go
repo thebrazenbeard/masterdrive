@@ -140,6 +140,10 @@ func TestReadRangeAndStableETag(t *testing.T) {
 	}
 	w=call(h,http.MethodHead,local(testFile),nil,nil)
 	if w.Code != http.StatusOK || w.Body.Len()!=0 || w.Header().Get("Content-Length")!="6" { t.Fatalf("HEAD: %d %q",w.Code,w.Body.String()) }
+	w=call(h,http.MethodHead,local(testFile),map[string]string{"Range":"bytes=0-1,3-4"},nil)
+	if w.Code != http.StatusOK || w.Body.Len()!=0 || w.Header().Get("Content-Length")!="6" { t.Fatalf("HEAD must ignore Range: %d %q headers=%v",w.Code,w.Body.String(),w.Header()) }
+	w=call(h,http.MethodHead,local(testFile),map[string]string{"Range":"bytes=0-1"},nil)
+	if w.Code != http.StatusOK || w.Body.Len()!=0 || w.Header().Get("Content-Length")!="6" { t.Fatalf("HEAD must ignore valid Range too: %d %q headers=%v",w.Code,w.Body.String(),w.Header()) }
 	w=call(h,http.MethodGet,local(testFile),map[string]string{"Range":"bytes=2-4","If-Range":`"version-1"`},nil)
 	if w.Code != http.StatusPartialContent || w.Body.String() != "cde" || w.Header().Get("Content-Range") != "bytes 2-4/6" { t.Fatalf("range %d %q %v",w.Code,w.Body.String(),w.Header()) }
 	w=call(h,http.MethodGet,local(testFile),map[string]string{"Range":"bytes=1-2,4-5"},nil)

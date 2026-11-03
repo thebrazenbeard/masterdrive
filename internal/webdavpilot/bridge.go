@@ -235,6 +235,12 @@ func (h *Handler) read(w http.ResponseWriter, r *http.Request, key Key) {
 		http.Error(w, "version-pinned read unavailable", http.StatusServiceUnavailable)
 		return
 	}
+	if r.Method == http.MethodHead && r.Header.Get("Range") != "" {
+		// RFC 9110 restricts Range to GET. A HEAD request must receive
+		// headers for the full selected representation, not a range error.
+		r = r.Clone(r.Context())
+		r.Header.Del("Range")
+	}
 	if requested := r.Header.Get("Range"); requested != "" {
 		validator := r.Header.Get("If-Range")
 		if validator != "" && !ifRangeMatches(validator, meta.StrongETag, meta.ModifiedAt) {

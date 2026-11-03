@@ -157,6 +157,10 @@ func TestSealedBytesRemainIdenticalAcrossIndependentWebDAVRanges(t *testing.T) {
 	if head.Code != http.StatusOK || head.Body.Len() != 0 || head.Header().Get("Content-Length") != fmt.Sprint(len(expected)) || head.Header().Get("ETag") != etag {
 		t.Fatalf("HEAD status=%d bytes=%d headers=%v", head.Code, head.Body.Len(), head.Header())
 	}
+	head = seamRequest(t, h, http.MethodHead, "/"+seamFile, map[string]string{"Range":"bytes=0-1,3-4"})
+	if head.Code != http.StatusOK || head.Body.Len() != 0 || head.Header().Get("Content-Length") != fmt.Sprint(len(expected)) {
+		t.Fatalf("HEAD must ignore Range: status=%d bytes=%d headers=%v",head.Code,head.Body.Len(),head.Header())
+	}
 
 	// Each request independently obtains a new seekable reader, not a shared
 	// mutable cursor. Together the ranges must reconstruct the exact GET bytes.
@@ -174,7 +178,7 @@ func TestSealedBytesRemainIdenticalAcrossIndependentWebDAVRanges(t *testing.T) {
 		}
 		joined.WriteString(r.Body.String())
 	}
-	if joined.String() != expected || backend.opens.Load() != 4 { // GET + HEAD + two ranges
+	if joined.String() != expected || backend.opens.Load() != 5 { // GET + two HEAD requests + two ranges
 		t.Fatalf("range reconstruction=%q opens=%d", joined.String(), backend.opens.Load())
 	}
 

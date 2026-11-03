@@ -210,6 +210,20 @@ func validStrongETag(tag string) bool {
 	return true
 }
 
+// The single-range guard must not reject a Range that RFC 9110 requires us
+// to ignore after a failed If-Range validator. Keep this aligned with
+// net/http.ServeContent's strong-ETag and HTTP-date validator handling.
+func ifRangeMatches(value, etag string, modified time.Time) bool {
+	if value == etag {
+		return true
+	}
+	if strings.HasPrefix(value, "W/") {
+		return false
+	}
+	date, err := http.ParseTime(value)
+	return err == nil && !modified.IsZero() && modified.Truncate(time.Second).Equal(date)
+}
+
 func (h *Handler) read(w http.ResponseWriter, r *http.Request, key Key) {
 	meta, err := h.backend.Stat(r.Context(), key)
 	if err != nil { fail(w, err); return }
@@ -221,7 +235,9 @@ func (h *Handler) read(w http.ResponseWriter, r *http.Request, key Key) {
 		return
 	}
 	if requested := r.Header.Get("Range"); requested != "" {
-		if len(requested) > 256 || !strings.HasPrefix(requested, "bytes=") || strings.Contains(requested, ",") {
+		validator := r.Header.Get("If-Range")
+		if (validator == "" || ifRangeMatches(validator, meta.StrongETag, meta.ModifiedAt)) &&
+			(len(requested) > 256 || !strings.HasPrefix(requested, "bytes=") || strings.Contains(requested, ",")) {
 			http.Error(w, "only a single byte range is supported", http.StatusBadRequest)
 			return
 		}

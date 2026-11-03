@@ -20,7 +20,7 @@ The `Backend` contract requires:
 - `Children(ctx, key, limit)` with an explicitly bounded snapshot cursor and return values `(entries, complete, err)`. The handler requests **at most 200 entries**, rejects `complete=false` and refuses any backend response exceeding the supplied limit. The backend **must not** read and allocate every child before applying the limit; it must use a streaming or paginated cursor, examining at most `limit + 1` entries to determine completeness. An incomplete result cannot become a successful `207` listing. This source-only interface requirement is **not proof** that a future adapter honors its memory limit; an actual adapter needs limit-enforcement and memory-budget tests.
 - `OpenSnapshot(ctx, key, expectedETag)` returning immutable seekable bytes pinned to exactly that version until close, or an explicit stale/offline error. `mtime + size` is not a substitute for strong file identity.
 
-`GET` and `HEAD` use a source-issued strong ETag and a version-pinned read handle. HTTP single ranges are delegated to Go's standard `http.ServeContent` only after the immutable handle's length is verified against metadata. Multi-ranges and date-form `If-Range` are rejected rather than silently changing representation. A missing source version, stale handle, source offline, or inconsistent body length fails closed.
+`GET` and `HEAD` use a source-issued strong ETag and a version-pinned read handle. HTTP single ranges are delegated to Go's standard `http.ServeContent` only after the immutable handle's length is verified against metadata. Multi-ranges are rejected when their range precondition applies; if an `If-Range` ETag or HTTP-date validator fails, HTTP semantics require ignoring the `Range` and serving the full selected representation. Matching date-form `If-Range` is accepted. A missing source version, stale handle, source offline, or inconsistent body length fails closed.
 
 ### Known protocol limitations
 
@@ -37,7 +37,7 @@ The `Backend` contract requires:
 3. Integrate the bridge with the new controller contract; add strict XML property selection if the selected WebDAV client requires it. Exercise `PROPFIND`, `GET`, `HEAD`, range and precondition logic with a real rclone WebDAV client against a disposable in-memory/local fixture.
 4. Only after explicit host approval, run user-session Windows WinFsp / Linux FUSE mount qualification with `rclone mount --read-only`, and measure client cache/revocation, directory churn, stale reads, crash recovery and teardown. No automatic mounts or installation.
 
-The local test file `bridge_test.go` models authorizer rejection, traversal and encoded separator rejection, mutation denial, namespace/multistatus, finite-depth limits, immutable reads, ETags, HTTP ranges and offline/stale failures. These tests have **not been executed here** because the execution environment does not provide `go`; they are source evidence awaiting CI. Do not mark them PASS until a successful actual `go test` or CI receipt exists.
+The local tests model authorizer rejection, traversal and encoded separator rejection, mutation denial, namespace/multistatus, finite-depth limits, immutable reads, ETags, HTTP ranges and offline/stale failures. The integration candidate also exercises sealed fixture bytes across independent range reads. Go tests have passed on the integration branch, but each subsequent head still requires its own CI/readback; neither tests nor CI qualify a live mount or production transport.
 
 ## Primary references
 

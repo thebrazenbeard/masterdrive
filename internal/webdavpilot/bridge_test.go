@@ -150,6 +150,14 @@ func TestReadRangeAndStableETag(t *testing.T) {
 			t.Errorf("failed If-Range should return full representation, validator=%q status=%d body=%q",validator,w.Code,w.Body.String())
 		}
 	}
+	w=call(h,http.MethodGet,local(testFile),map[string]string{"Range":"bytes=0-1","If-Range":"Mon, 02 Nov 2026 10:00:00 GMT"},nil)
+	if w.Code != http.StatusPartialContent || w.Body.String() != "ab" {
+		t.Errorf("matching date If-Range must preserve the requested range: status=%d body=%q",w.Code,w.Body.String())
+	}
+	w=call(h,http.MethodGet,local(testFile),map[string]string{"Range":"bytes=0-1,3-4","If-Range":`"different"`},nil)
+	if w.Code != http.StatusOK || w.Body.String() != "abcdef" {
+		t.Errorf("failed If-Range must ignore otherwise unsupported multipart range: status=%d body=%q",w.Code,w.Body.String())
+	}
 }
 
 func TestOfflineStaleAndNoUnversionedFallback(t *testing.T) {

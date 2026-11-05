@@ -94,6 +94,12 @@ func (j *GenerationJournal) Observe(v uint64) error {
 		j.poisoned = true
 		return ErrReadNotAuthorized
 	}
+	ownerInfo, ownerErr := j.owner.Stat()
+	ownerAtPath, ownerPathErr := os.Stat(j.ownerPath)
+	if ownerErr != nil || ownerPathErr != nil || !os.SameFile(ownerInfo, ownerAtPath) {
+		j.poisoned = true
+		return ErrReadNotAuthorized
+	}
 	stat, statErr := j.f.Stat()
 	pathStat, pathErr := os.Stat(j.f.Name())
 	if statErr != nil || pathErr != nil || !os.SameFile(stat, pathStat) || stat.Size() != j.size {

@@ -155,12 +155,23 @@ func (j *GenerationJournal) Close() error {
 	e := j.f.Close()
 	j.f = nil
 	if j.owner != nil {
+		ownerInfo, ownerStatErr := j.owner.Stat()
+		if ownerStatErr != nil && e == nil {
+			e = ownerStatErr
+		}
 		if closeErr := j.owner.Close(); e == nil {
 			e = closeErr
 		}
 		j.owner = nil
 		if e == nil {
-			e = os.Remove(j.ownerPath)
+			// Never remove a marker replaced by another process. This check
+			// is not atomic and does not replace an OS-owned file lock.
+			marker, statErr := os.Stat(j.ownerPath)
+			if statErr != nil || !os.SameFile(ownerInfo, marker) {
+				e = ErrGenerationJournal
+			} else {
+				e = os.Remove(j.ownerPath)
+			}
 		}
 	}
 	return e

@@ -28,11 +28,11 @@ const maxPeerJSON = 2 << 20
 func New(store *catalog.Store, tokens map[string]string, client *http.Client) http.Handler {
 	if client == nil {
 		client = &http.Client{Transport: &http.Transport{
-			Proxy: http.ProxyFromEnvironment,
-			DialContext: (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-			TLSHandshakeTimeout: 5 * time.Second,
+			Proxy:                 http.ProxyFromEnvironment,
+			DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+			TLSHandshakeTimeout:   5 * time.Second,
 			ResponseHeaderTimeout: 15 * time.Second,
-			MaxIdleConnsPerHost: 2,
+			MaxIdleConnsPerHost:   2,
 		}, CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		}}
@@ -145,6 +145,10 @@ func New(store *catalog.Store, tokens map[string]string, client *http.Client) ht
 		var ifRange string
 		if download {
 			request.Header.Set("Accept", "application/octet-stream")
+			if rangeValues := r.Header.Values("Range"); len(rangeValues) > 1 {
+				fail(w, http.StatusBadRequest, "invalid_range", "multiple Range headers are not supported")
+				return
+			}
 			if requestedRange := r.Header.Get("Range"); requestedRange != "" {
 				if len(requestedRange) > 256 || strings.Contains(requestedRange, ",") || !strings.HasPrefix(requestedRange, "bytes=") {
 					fail(w, http.StatusBadRequest, "invalid_range", "only a single byte range is supported")
@@ -271,9 +275,13 @@ func validSingleRangeResponse(requested, returned string, length int64) bool {
 		return false
 	}
 	rangePart, totalPart, ok := strings.Cut(strings.TrimPrefix(returned, "bytes "), "/")
-	if !ok || totalPart == "*" { return false }
+	if !ok || totalPart == "*" {
+		return false
+	}
 	startPart, endPart, ok := strings.Cut(rangePart, "-")
-	if !ok { return false }
+	if !ok {
+		return false
+	}
 	start, errStart := strconv.ParseInt(startPart, 10, 64)
 	end, errEnd := strconv.ParseInt(endPart, 10, 64)
 	total, errTotal := strconv.ParseInt(totalPart, 10, 64)
@@ -281,20 +289,32 @@ func validSingleRangeResponse(requested, returned string, length int64) bool {
 		return false
 	}
 	reqStartPart, reqEndPart, ok := strings.Cut(strings.TrimPrefix(requested, "bytes="), "-")
-	if !ok { return false }
+	if !ok {
+		return false
+	}
 	if reqStartPart == "" {
 		suffix, err := strconv.ParseInt(reqEndPart, 10, 64)
-		if err != nil || suffix <= 0 { return false }
-		if suffix > total { suffix = total }
+		if err != nil || suffix <= 0 {
+			return false
+		}
+		if suffix > total {
+			suffix = total
+		}
 		return start == total-suffix && end == total-1
 	}
 	reqStart, err := strconv.ParseInt(reqStartPart, 10, 64)
-	if err != nil || reqStart < 0 || reqStart >= total { return false }
-	expectedEnd := total-1
+	if err != nil || reqStart < 0 || reqStart >= total {
+		return false
+	}
+	expectedEnd := total - 1
 	if reqEndPart != "" {
 		reqEnd, err := strconv.ParseInt(reqEndPart, 10, 64)
-		if err != nil || reqEnd < reqStart { return false }
-		if reqEnd < expectedEnd { expectedEnd = reqEnd }
+		if err != nil || reqEnd < reqStart {
+			return false
+		}
+		if reqEnd < expectedEnd {
+			expectedEnd = reqEnd
+		}
 	}
 	return start == reqStart && end == expectedEnd
 }

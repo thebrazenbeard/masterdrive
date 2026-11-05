@@ -25,6 +25,7 @@ type GenerationJournal struct {
 	ownerPath string
 	highest   uint64
 	size      int64
+	digest    [32]byte
 	poisoned  bool
 }
 
@@ -76,6 +77,11 @@ func OpenGenerationJournal(path string) (*GenerationJournal, error) {
 	}
 	j.highest = prior
 	j.size = stat.Size()
+	j.digest, e = journalDigest(f, j.size)
+	if e != nil {
+		j.Close()
+		return nil, e
+	}
 	return j, nil
 }
 func (j *GenerationJournal) Observe(v uint64) error {
@@ -94,6 +100,11 @@ func (j *GenerationJournal) Observe(v uint64) error {
 		j.poisoned = true
 		return ErrReadNotAuthorized
 	}
+	digest, digestErr := journalDigest(j.f, j.size)
+	if digestErr != nil || digest != j.digest {
+		j.poisoned = true
+		return ErrReadNotAuthorized
+	}
 	if v == j.highest {
 		return nil
 	}
@@ -109,8 +120,28 @@ func (j *GenerationJournal) Observe(v uint64) error {
 	}
 	j.highest = v
 	j.size += int64(len(s) + 66)
+	updatedDigest, digestErr := journalDigest(j.f, j.size)
+	if digestErr != nil {
+		j.poisoned = true
+		return digestErr
+	}
+	j.digest = updatedDigest
 	return nil
 }
+
+// journalDigest reads through the existing file handle without moving its append offset.
+// This detects same-length external rewrites; it does not authenticate storage.
+func journalDigest(f *os.File, size int64) ([32]byte, error) {
+	var zero [32]byte
+	h := sha256.New()
+	if _, e := io.Copy(h, io.NewSectionReader(f, 0, size)); e != nil {
+		return zero, e
+	}
+	var sum [32]byte
+	copy(sum[:], h.Sum(nil))
+	return sum, nil
+}
+
 func (j *GenerationJournal) Close() error {
 	if j == nil {
 		return nil

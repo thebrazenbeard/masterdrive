@@ -263,6 +263,12 @@ func validStrongETag(value string) bool {
 	return true
 }
 
+func decimalDigits(value string) bool {
+    if value == "" { return false }
+    for i := 0; i < len(value); i++ { if value[i] < '0' || value[i] > '9' { return false } }
+    return true
+}
+
 // validSingleRangeResponse checks that a peer's 206 covers exactly the bytes
 // requested, with a coherent total and body length. It does not establish
 // cross-request file immutability; resumes need separate entity validators.
@@ -277,7 +283,7 @@ func validSingleRangeResponse(requested, returned string, length int64) bool {
 	start, errStart := strconv.ParseInt(startPart, 10, 64)
 	end, errEnd := strconv.ParseInt(endPart, 10, 64)
 	total, errTotal := strconv.ParseInt(totalPart, 10, 64)
-	if errStart != nil || errEnd != nil || errTotal != nil || total <= 0 || start < 0 || end < start || end >= total || length != end-start+1 {
+	if !decimalDigits(startPart) || !decimalDigits(endPart) || !decimalDigits(totalPart) || errStart != nil || errEnd != nil || errTotal != nil || total <= 0 || start < 0 || end < start || end >= total || length != end-start+1 {
 		return false
 	}
 	reqStartPart, reqEndPart, ok := strings.Cut(strings.TrimPrefix(requested, "bytes="), "-")

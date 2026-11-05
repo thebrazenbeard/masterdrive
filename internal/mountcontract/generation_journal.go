@@ -24,6 +24,7 @@ type GenerationJournal struct {
 	owner     *os.File
 	ownerPath string
 	highest   uint64
+	size      int64
 	poisoned  bool
 }
 
@@ -74,6 +75,7 @@ func OpenGenerationJournal(path string) (*GenerationJournal, error) {
 		}
 	}
 	j.highest = prior
+	j.size = stat.Size()
 	return j, nil
 }
 func (j *GenerationJournal) Observe(v uint64) error {
@@ -83,6 +85,12 @@ func (j *GenerationJournal) Observe(v uint64) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if j.poisoned || j.f == nil || v == 0 || v < j.highest {
+		j.poisoned = true
+		return ErrReadNotAuthorized
+	}
+	stat, statErr := j.f.Stat()
+	pathStat, pathErr := os.Stat(j.f.Name())
+	if statErr != nil || pathErr != nil || !os.SameFile(stat, pathStat) || stat.Size() != j.size {
 		j.poisoned = true
 		return ErrReadNotAuthorized
 	}
@@ -100,6 +108,7 @@ func (j *GenerationJournal) Observe(v uint64) error {
 		return e
 	}
 	j.highest = v
+	j.size += int64(len(s) + 66)
 	return nil
 }
 func (j *GenerationJournal) Close() error {

@@ -140,7 +140,10 @@ func (j *GenerationJournal) Observe(v uint64) error {
 func journalDigest(f *os.File, size int64) ([32]byte, error) {
 	var zero [32]byte
 	h := sha256.New()
-	if _, e := io.Copy(h, io.NewSectionReader(f, 0, size)); e != nil {
+	if size < 0 {
+		return zero, ErrGenerationJournal
+	}
+	if _, e := io.CopyN(h, io.NewSectionReader(f, 0, size), size); e != nil {
 		return zero, e
 	}
 	var sum [32]byte

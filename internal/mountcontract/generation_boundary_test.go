@@ -25,7 +25,7 @@ func TestGenerationChangeDuringBodyReadFailsClosed(t *testing.T) {
 	body := &generationChangingReader{reader: bytes.NewReader([]byte("abc")), change: func() { generation = 8 }}
 	headers := http.Header{"Etag": {"\"v1\""}, "Content-Range": {"bytes 0-2/3"}, "Content-Length": {"3"}}
 	got, err := StageGenerationPinnedRange(context.Background(), grant, "\"v1\"", 206, headers, body, 0, 2, 3)
-	if !errors.Is(err, ErrIncompleteRangeBody) || got != nil {
+	if !errors.Is(err, ErrReadNotAuthorized) || got != nil {
 		t.Fatalf("changed generation released bytes: %q, %v", got, err)
 	}
 }

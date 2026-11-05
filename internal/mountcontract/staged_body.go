@@ -1,6 +1,7 @@
 package mountcontract
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -42,7 +43,13 @@ func StagePinnedRange(pin string, status int, headers http.Header, body io.Reade
 		return nil, ErrIncompleteRangeBody
 	}
 	buf, err := io.ReadAll(io.LimitReader(&progressGuard{reader: body}, n+1))
-	if err != nil || int64(len(buf)) != n {
+	if err != nil {
+		if errors.Is(err, ErrReadNotAuthorized) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
+		return nil, ErrIncompleteRangeBody
+	}
+	if int64(len(buf)) != n {
 		return nil, ErrIncompleteRangeBody
 	}
 	return buf, nil

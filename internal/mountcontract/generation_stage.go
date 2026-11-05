@@ -8,10 +8,27 @@ import (
 
 type AuthorizationGeneration func() (uint64, error)
 
-// StageGenerationPinnedRange requires an authoritative nonzero grant generation
-// before and after staging. A changed generation invalidates the entire read,
-// even if the new grant would otherwise allow access.
-// Generation storage, atomicity and durability belong to the authority provider.
+// generationReader refuses bytes if the authority changes while a body is
+// being staged. The final authorization check still applies before release.
+type generationReader struct {
+	reader io.Reader
+	check  func() error
+}
+
+func (r generationReader) Read(p []byte) (int, error) {
+	if err := r.check(); err != nil {
+		return 0, err
+	}
+	n, err := r.reader.Read(p)
+	if checkErr := r.check(); checkErr != nil {
+		return 0, checkErr
+	}
+	return n, err
+}
+
+// StageGenerationPinnedRange rejects a missing or changed grant generation
+// before, during, and after staging. This is cooperative sampling, not an
+// atomic revocation lease; authoritative durable state remains external.
 func StageGenerationPinnedRange(ctx context.Context, grant AuthorizationGeneration, pin string, status int, headers http.Header, body io.Reader, start, end, total int64) ([]byte, error) {
 	if grant == nil {
 		return nil, ErrReadNotAuthorized
@@ -25,5 +42,11 @@ func StageGenerationPinnedRange(ctx context.Context, grant AuthorizationGenerati
 		initial = generation
 		return nil
 	}
-	return StageAuthorizedRangeContext(ctx, check, pin, status, headers, body, start, end, total)
+	if err := check(); err != nil {
+		return nil, err
+	}
+	if body == nil {
+		return nil, ErrIncompleteRangeBody
+	}
+	return StageAuthorizedRangeContext(ctx, check, pin, status, headers, generationReader{reader: body, check: check}, start, end, total)
 }

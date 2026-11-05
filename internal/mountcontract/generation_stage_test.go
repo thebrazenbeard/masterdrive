@@ -31,7 +31,7 @@ func TestGenerationPinnedRead(t *testing.T) {
 			if tc.fail && (!errors.Is(err, ErrReadNotAuthorized) || got != nil) {
 				t.Fatalf("expected denial, got %q %v", got, err)
 			}
-			if !tc.fail && (err != nil || string(got) != "abc" || calls != 2) {
+			if !tc.fail && (err != nil || string(got) != "abc" || calls < 4) {
 				t.Fatalf("expected complete read, got %q %v checks=%d", got, err, calls)
 			}
 		})

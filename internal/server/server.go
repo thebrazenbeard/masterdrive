@@ -145,7 +145,7 @@ func New(store *catalog.Store, tokens map[string]string, client *http.Client) ht
 		var ifRange string
 		if download {
 			request.Header.Set("Accept", "application/octet-stream")
-			if rangeValues := r.Header.Values("Range"); len(rangeValues) > 1 {
+			if rangeValues := r.Header.Values("Range"); len(rangeValues) > 1 || (len(rangeValues) == 1 && rangeValues[0] == "") {
 				fail(w, http.StatusBadRequest, "invalid_range", "multiple Range headers are not supported")
 				return
 			}

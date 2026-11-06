@@ -157,7 +157,7 @@ func New(store *catalog.Store, tokens map[string]string, client *http.Client) ht
 			}
 			if len(ranges) == 1 {
 				requestedRange := ranges[0]
-				if len(requestedRange) > 256 || strings.Contains(requestedRange, ",") || !strings.HasPrefix(requestedRange, "bytes=") {
+				if len(requestedRange) > 256 || !validSingleRangeRequest(requestedRange) {
 					fail(w, http.StatusBadRequest, "invalid_range", "only a single byte range is supported")
 					return
 				}
@@ -293,6 +293,39 @@ func decimalDigits(value string) bool {
 		if value[i] < '0' || value[i] > '9' {
 			return false
 		}
+	}
+	return true
+}
+
+// validSingleRangeRequest validates syntax and signed 64-bit bounds before any
+// peer request. Representation-dependent bounds are checked on the response.
+func validSingleRangeRequest(value string) bool {
+	if !strings.HasPrefix(value, "bytes=") {
+		return false
+	}
+	start, end, ok := strings.Cut(strings.TrimPrefix(value, "bytes="), "-")
+	if !ok || (start == "" && end == "") {
+		return false
+	}
+	for _, part := range []string{start, end} {
+		if part == "" {
+			continue
+		}
+		if !decimalDigits(part) {
+			return false
+		}
+		if _, err := strconv.ParseInt(part, 10, 64); err != nil {
+			return false
+		}
+	}
+	if start == "" {
+		suffix, _ := strconv.ParseInt(end, 10, 64)
+		return suffix > 0
+	}
+	if end != "" {
+		first, _ := strconv.ParseInt(start, 10, 64)
+		last, _ := strconv.ParseInt(end, 10, 64)
+		return last >= first
 	}
 	return true
 }

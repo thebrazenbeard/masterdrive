@@ -193,6 +193,10 @@ func New(store *catalog.Store, tokens map[string]string, client *http.Client) ht
 				fail(w, http.StatusBadGateway, "peer_error", fmt.Sprintf("peer returned unexpected HTTP %d", response.StatusCode))
 				return
 			}
+			if response.StatusCode == http.StatusOK && len(response.Header.Values("Content-Range")) != 0 {
+				fail(w, http.StatusBadGateway, "invalid_range", "peer sent Content-Range on a full response")
+				return
+			}
 			peerETags := response.Header.Values("ETag")
 			peerETag := response.Header.Get("ETag")
 			if ifRange != "" && (len(peerETags) != 1 || peerETag != ifRange) {

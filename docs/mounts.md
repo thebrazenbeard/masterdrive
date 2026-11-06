@@ -113,3 +113,18 @@ This is an availability tradeoff, **not** an authenticated revocation store:
 an attacker restoring both journal and owner marker can still roll back state.
 An operator must design a separately authenticated checkpoint authority before
 using the journal as a mount authorization prerequisite.
+
+### Snapshot rollback falsification (2026-11-06)
+
+The synthetic regression `TestJournalSnapshotRollbackIsNotDetected` proves
+that restoring a previously valid journal after a higher generation was
+observed lets the observer reopen at the lower generation. This is a
+**known vulnerability**, not a test of safe revocation. SHA-256 record
+checksums and exclusive owner markers cannot establish an external
+anti-rollback anchor. Do not use this journal as pairing/revocation
+authority or enable a mount based on its generation alone.
+
+Required gate: trusted, independently persistent monotonic authority,
+authenticated peer identity and per-share grants, revocation checks at
+every staged read, and crash/recovery tests across Windows and Linux.
+No production host or real drive is involved in this regression.

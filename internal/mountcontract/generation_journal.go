@@ -61,7 +61,7 @@ func OpenGenerationJournal(path string) (*GenerationJournal, error) {
 		}
 		v, e := strconv.ParseUint(fields[0], 10, 64)
 		sum := sha256.Sum256([]byte("masterdrive-generation-v1:" + fields[0]))
-		if e != nil || v == 0 || v <= prior || fields[1] != hex.EncodeToString(sum[:]) {
+		if e != nil || v == 0 || v <= prior || strconv.FormatUint(v, 10) != fields[0] || fields[1] != hex.EncodeToString(sum[:]) {
 			j.Close()
 			return nil, ErrGenerationJournal
 		}

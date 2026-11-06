@@ -15,6 +15,10 @@ import (
 
 var ErrGenerationJournal = errors.New("invalid generation journal")
 
+// maxGenerationJournalBytes bounds observation storage until authenticated
+// checkpoint/compaction authority exists. Exhaustion fails closed.
+const maxGenerationJournalBytes int64 = 64 * 1024
+
 // GenerationJournal is a single-process observation fence, NOT an authorization
 // authority. Callers must ensure exclusive ownership, protected storage and
 // independent anti-rollback protection; restored files cannot prove revocation.
@@ -42,6 +46,11 @@ func OpenGenerationJournal(path string) (*GenerationJournal, error) {
 		return nil, e
 	}
 	j := &GenerationJournal{f: f, owner: owner, ownerPath: ownerPath}
+	initialStat, statErr := f.Stat()
+	if statErr != nil || initialStat.Size() > maxGenerationJournalBytes {
+		j.Close()
+		return nil, ErrGenerationJournal
+	}
 	s := bufio.NewScanner(f)
 	var prior uint64
 	for s.Scan() {
@@ -116,7 +125,12 @@ func (j *GenerationJournal) Observe(v uint64) error {
 	}
 	s := strconv.FormatUint(v, 10)
 	sum := sha256.Sum256([]byte("masterdrive-generation-v1:" + s))
-	if _, e := io.WriteString(j.f, fmt.Sprintf("%s %x\n", s, sum)); e != nil {
+	record := fmt.Sprintf("%s %x\n", s, sum)
+	if j.size > maxGenerationJournalBytes-int64(len(record)) {
+		j.poisoned = true
+		return ErrReadNotAuthorized
+	}
+	if _, e := io.WriteString(j.f, record); e != nil {
 		j.poisoned = true
 		return e
 	}

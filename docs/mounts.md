@@ -102,3 +102,14 @@ Primary sources retrieved on 2026-11-02:
 - MasterDrive source: `cmd/masterdrive`, `internal/agent`, `internal/server`, `docs/protocol-v1.md` at the v0.1/G1 source-inspection checkpoint.
 
 Open decisions include: a reviewed Go mount binding and pinned dependency version; Windows driver distribution/licensing and signing policy; per-user capability IPC; exact stat/version/cursor protocol; collision naming policy; whether WebDAV's interoperability is sufficient to justify its additional attack surface; and how revocation interacts with OS page caches. None is implemented or qualified yet.
+
+### Experimental observation-journal exhaustion (draft, not mount authorization)
+
+The experimental generation journal in `internal/mountcontract/generation_journal.go`
+has a 64 KiB on-disk cap. Opening a larger file fails closed; appending a
+record that would cross the cap poisons the observer and denies subsequent
+reads. No automatic compaction, marker deletion, or rollback recovery occurs.
+This is an availability tradeoff, **not** an authenticated revocation store:
+an attacker restoring both journal and owner marker can still roll back state.
+An operator must design a separately authenticated checkpoint authority before
+using the journal as a mount authorization prerequisite.

@@ -130,7 +130,7 @@ func (j *GenerationJournal) Observe(v uint64) error {
 		j.poisoned = true
 		return ErrReadNotAuthorized
 	}
-	if n, e := io.WriteString(j.f, record); e != nil || n != len(record) {
+	if n, e := writeJournalRecord(j.f, record); e != nil || n != len(record) {
 		j.poisoned = true
 		if e != nil {
 			return e
@@ -150,6 +150,16 @@ func (j *GenerationJournal) Observe(v uint64) error {
 	}
 	j.digest = updatedDigest
 	return nil
+}
+
+// writeJournalRecord rejects a short write even when the writer returns nil error.
+// Kept separate to permit deterministic fault injection without touching real files.
+func writeJournalRecord(w io.Writer, record string) (int, error) {
+	n, err := io.WriteString(w, record)
+	if err == nil && n != len(record) {
+		return n, io.ErrShortWrite
+	}
+	return n, err
 }
 
 // journalDigest reads through the existing file handle without moving its append offset.

@@ -130,16 +130,19 @@ func (j *GenerationJournal) Observe(v uint64) error {
 		j.poisoned = true
 		return ErrReadNotAuthorized
 	}
-	if _, e := io.WriteString(j.f, record); e != nil {
+	if n, e := io.WriteString(j.f, record); e != nil || n != len(record) {
 		j.poisoned = true
-		return e
+		if e != nil {
+			return e
+		}
+		return io.ErrShortWrite
 	}
 	if e := j.f.Sync(); e != nil {
 		j.poisoned = true
 		return e
 	}
 	j.highest = v
-	j.size += int64(len(s) + 66)
+	j.size += int64(len(record))
 	updatedDigest, digestErr := journalDigest(j.f, j.size)
 	if digestErr != nil {
 		j.poisoned = true

@@ -264,9 +264,15 @@ func validStrongETag(value string) bool {
 }
 
 func decimalDigits(value string) bool {
-    if value == "" { return false }
-    for i := 0; i < len(value); i++ { if value[i] < '0' || value[i] > '9' { return false } }
-    return true
+	if value == "" {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		if value[i] < '0' || value[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // validSingleRangeResponse checks that a peer's 206 covers exactly the bytes

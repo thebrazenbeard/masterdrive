@@ -56,15 +56,15 @@ Controller errors use:
 { "error": { "code": "peer_unavailable", "message": "peer could not be reached" } }
 ```
 
-Likely error families include `session_required` (`401`), `invalid_host` (`403`), `unknown_host` (`404`), `peer_token_missing` (`403`), `peer_unavailable` (`502`), `peer_error` (`502`), `invalid_peer_response` (`502`), `invalid_range` (`400`), `bad_path` (`400`), `method_not_allowed` (`405`), and `not_found` (`404`). Exact status varies by route and underlying condition; clients should use codes and HTTP status rather than parse prose. Upstream agent error details are deliberately not blindly exposed to browsers.
+Likely error families include `session_required` (`401`), `invalid_host` (`403`), `unknown_host` (`404`), `peer_token_missing` (`403`), `peer_unavailable` (`502`), `peer_error` (`502`), `invalid_peer_response` (`502`), `invalid_range` (`400`), `invalid_if_range` (`400`), `range_not_pinned` (`428`), `bad_path` (`400`), `method_not_allowed` (`405`), and `not_found` (`404`). Exact status varies by route and underlying condition; clients should use codes and HTTP status rather than parse prose. Upstream agent error details are deliberately not blindly exposed to browsers.
 
 ## Transfer semantics
 
 - Downloads are **read-through streaming** from one source. No replication, retry-across-hosts, cache guarantee or background sync occurs.
 - The gateway disables HTTP redirects for its default client. It sets the peer token itself; browser requests cannot pick arbitrary peer origins.
 - A missing upstream `Content-Length` is rejected before download headers. A premature EOF after headers causes the gateway to abort the stream, so consumers see an incomplete transfer; no checksum or end-to-end digest is specified yet.
-- Single range requests are forwarded; multi-range requests are rejected by the gateway. Do not interpret partial-content responses as full downloads.
-- A source modification during a transfer is not version-locked. Consumers should verify their own content integrity; future protocol versions need ETag/hash/version preconditions and resumable transfer design.
+- The controller forwards a single byte range **only** when the caller supplies exactly one syntactically strong If-Range ETag. Unpinned ranges fail with HTTP 428 (`range_not_pinned`); duplicate/invalid range or validator headers fail with HTTP 400. The peer must return HTTP 206, the exact strong ETag, and matching Content-Range/length. The current live-file agent does not issue immutable strong ETags, so its ranges cannot satisfy this precondition. See [gateway pinned-range boundary](security/gateway-pinned-range.md).
+- A source modification during a transfer is not version-locked. The gateway validates response headers, not source coherence or content integrity. Consumers should verify their own content; future protocol versions need authenticated immutable representations, revocation fencing, and qualified resumable transfer design.
 
 ## Compatibility and future versions
 

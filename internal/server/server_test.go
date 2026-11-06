@@ -149,7 +149,8 @@ func TestGatewayAbortsTruncatedPeerDownload(t *testing.T) {
 
 func TestGatewayForwardsSingleByteRange(t *testing.T) {
 	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Range") != "bytes=1-3" { http.Error(w, "range missing", http.StatusBadRequest); return }
+		if r.Header.Get("Range") != "bytes=1-3" || r.Header.Get("If-Range") != "\"fixture-v1\"" { http.Error(w, "unpinned range", http.StatusBadRequest); return }
+		w.Header().Set("ETag", "\"fixture-v1\"")
 		w.Header().Set("Content-Length", "3")
 		w.Header().Set("Content-Range", "bytes 1-3/6")
 		w.WriteHeader(http.StatusPartialContent)
@@ -165,6 +166,7 @@ func TestGatewayForwardsSingleByteRange(t *testing.T) {
 	req, err := http.NewRequest(http.MethodGet, controller.URL+"/api/v1/hosts/"+host.ID+"/shares/docs/download?path=test.bin", nil)
 	if err != nil { t.Fatal(err) }
 	req.Header.Set("Range", "bytes=1-3")
+	req.Header.Set("If-Range", "\"fixture-v1\"")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil { t.Fatal(err) }
 	defer resp.Body.Close()
@@ -198,6 +200,7 @@ func TestSingleRangeValidation(t *testing.T) {
 func TestGatewayRejectsMismatchedPeerByteRange(t *testing.T) {
 	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", "3")
+		w.Header().Set("ETag", "\"fixture-v1\"")
 		w.Header().Set("Content-Range", "bytes 10-12/100")
 		w.WriteHeader(http.StatusPartialContent)
 		_, _ = w.Write([]byte("XYZ"))
@@ -212,6 +215,7 @@ func TestGatewayRejectsMismatchedPeerByteRange(t *testing.T) {
 	req, err := http.NewRequest(http.MethodGet, controller.URL+"/api/v1/hosts/"+host.ID+"/shares/docs/download?path=test.bin", nil)
 	if err != nil { t.Fatal(err) }
 	req.Header.Set("Range", "bytes=1-3")
+	req.Header.Set("If-Range", "\"fixture-v1\"")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil { t.Fatal(err) }
 	defer resp.Body.Close()

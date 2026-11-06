@@ -28,11 +28,11 @@ const maxPeerJSON = 2 << 20
 func New(store *catalog.Store, tokens map[string]string, client *http.Client) http.Handler {
 	if client == nil {
 		client = &http.Client{Transport: &http.Transport{
-			Proxy: http.ProxyFromEnvironment,
-			DialContext: (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-			TLSHandshakeTimeout: 5 * time.Second,
+			Proxy:                 http.ProxyFromEnvironment,
+			DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+			TLSHandshakeTimeout:   5 * time.Second,
 			ResponseHeaderTimeout: 15 * time.Second,
-			MaxIdleConnsPerHost: 2,
+			MaxIdleConnsPerHost:   2,
 		}, CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		}}
@@ -145,21 +145,34 @@ func New(store *catalog.Store, tokens map[string]string, client *http.Client) ht
 		var ifRange string
 		if download {
 			request.Header.Set("Accept", "application/octet-stream")
-			if requestedRange := r.Header.Get("Range"); requestedRange != "" {
+			ranges := r.Header.Values("Range")
+			validators := r.Header.Values("If-Range")
+			if len(ranges) > 1 || (len(ranges) == 1 && ranges[0] == "") {
+				fail(w, http.StatusBadRequest, "invalid_range", "exactly one nonempty byte range is allowed")
+				return
+			}
+			if len(ranges) == 0 && len(validators) != 0 {
+				fail(w, http.StatusBadRequest, "invalid_if_range", "If-Range requires a byte range")
+				return
+			}
+			if len(ranges) == 1 {
+				requestedRange := ranges[0]
 				if len(requestedRange) > 256 || strings.Contains(requestedRange, ",") || !strings.HasPrefix(requestedRange, "bytes=") {
 					fail(w, http.StatusBadRequest, "invalid_range", "only a single byte range is supported")
 					return
 				}
-				if values := r.Header.Values("If-Range"); len(values) != 0 {
-					// HTTP dates and weak entity tags are not safe range-version
-					// evidence for mutable files exposed by MasterDrive.
-					if len(values) != 1 || !validStrongETag(values[0]) {
-						fail(w, http.StatusBadRequest, "invalid_if_range", "a single strong ETag is required for conditional ranges")
-						return
-					}
-					ifRange = values[0]
-					request.Header.Set("If-Range", ifRange)
+				// Refuse unpinned partial reads even if a peer offers a range.
+				// A range-assembling client must already know a strong version.
+				if len(validators) == 0 {
+					fail(w, http.StatusPreconditionRequired, "range_not_pinned", "a strong If-Range ETag is required")
+					return
 				}
+				if len(validators) != 1 || !validStrongETag(validators[0]) {
+					fail(w, http.StatusBadRequest, "invalid_if_range", "a single strong ETag is required for conditional ranges")
+					return
+				}
+				ifRange = validators[0]
+				request.Header.Set("If-Range", ifRange)
 				request.Header.Set("Range", requestedRange)
 			}
 		} else {
@@ -173,7 +186,7 @@ func New(store *catalog.Store, tokens map[string]string, client *http.Client) ht
 		defer response.Body.Close()
 		if download {
 			requestedRange := request.Header.Get("Range")
-			if encoding := response.Header.Get("Content-Encoding"); encoding != "" && !strings.EqualFold(encoding, "identity") {
+			if encodings := response.Header.Values("Content-Encoding"); len(encodings) > 1 || (len(encodings) == 1 && !strings.EqualFold(encodings[0], "identity")) {
 				fail(w, http.StatusBadGateway, "unexpected_encoding", "peer returned a transformed file representation")
 				return
 			}
@@ -187,6 +200,10 @@ func New(store *catalog.Store, tokens map[string]string, client *http.Client) ht
 			if (requestedRange == "" && response.StatusCode != http.StatusOK) ||
 				(requestedRange != "" && response.StatusCode != http.StatusPartialContent) {
 				fail(w, http.StatusBadGateway, "peer_error", fmt.Sprintf("peer returned unexpected HTTP %d", response.StatusCode))
+				return
+			}
+			if response.StatusCode == http.StatusOK && len(response.Header.Values("Content-Range")) != 0 {
+				fail(w, http.StatusBadGateway, "invalid_range", "peer sent Content-Range on a full response")
 				return
 			}
 			peerETags := response.Header.Values("ETag")
@@ -208,7 +225,12 @@ func New(store *catalog.Store, tokens map[string]string, client *http.Client) ht
 			}
 			var contentRange string
 			if response.StatusCode == http.StatusPartialContent {
-				contentRange = response.Header.Get("Content-Range")
+				contentRanges := response.Header.Values("Content-Range")
+				if len(contentRanges) != 1 {
+					fail(w, http.StatusBadGateway, "invalid_range", "peer returned ambiguous Content-Range headers")
+					return
+				}
+				contentRange = contentRanges[0]
 				if !validSingleRangeResponse(requestedRange, contentRange, response.ContentLength) {
 					fail(w, http.StatusBadGateway, "invalid_range", "peer did not provide a valid range response")
 					return
@@ -221,11 +243,11 @@ func New(store *catalog.Store, tokens map[string]string, client *http.Client) ht
 			// provides them, downloads advertise no resumption guarantee.
 			if len(peerETags) == 1 && validStrongETag(peerETag) {
 				w.Header().Set("ETag", peerETag)
+				w.Header().Set("Accept-Ranges", "bytes")
 			}
 			if contentRange != "" {
 				w.Header().Set("Content-Range", contentRange)
 			}
-			w.Header().Set("Accept-Ranges", "bytes")
 			w.WriteHeader(response.StatusCode)
 			if copied, err := io.CopyN(w, response.Body, response.ContentLength); err != nil || copied != response.ContentLength {
 				// Headers have been sent; a 502 is no longer possible. Abort the
@@ -263,6 +285,18 @@ func validStrongETag(value string) bool {
 	return true
 }
 
+func decimalDigits(value string) bool {
+	if value == "" {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		if value[i] < '0' || value[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // validSingleRangeResponse checks that a peer's 206 covers exactly the bytes
 // requested, with a coherent total and body length. It does not establish
 // cross-request file immutability; resumes need separate entity validators.
@@ -271,30 +305,46 @@ func validSingleRangeResponse(requested, returned string, length int64) bool {
 		return false
 	}
 	rangePart, totalPart, ok := strings.Cut(strings.TrimPrefix(returned, "bytes "), "/")
-	if !ok || totalPart == "*" { return false }
+	if !ok || totalPart == "*" {
+		return false
+	}
 	startPart, endPart, ok := strings.Cut(rangePart, "-")
-	if !ok { return false }
+	if !ok {
+		return false
+	}
 	start, errStart := strconv.ParseInt(startPart, 10, 64)
 	end, errEnd := strconv.ParseInt(endPart, 10, 64)
 	total, errTotal := strconv.ParseInt(totalPart, 10, 64)
-	if errStart != nil || errEnd != nil || errTotal != nil || total <= 0 || start < 0 || end < start || end >= total || length != end-start+1 {
+	if !decimalDigits(startPart) || !decimalDigits(endPart) || !decimalDigits(totalPart) || errStart != nil || errEnd != nil || errTotal != nil || total <= 0 || start < 0 || end < start || end >= total || length != end-start+1 {
 		return false
 	}
 	reqStartPart, reqEndPart, ok := strings.Cut(strings.TrimPrefix(requested, "bytes="), "-")
-	if !ok { return false }
+	if !ok {
+		return false
+	}
 	if reqStartPart == "" {
 		suffix, err := strconv.ParseInt(reqEndPart, 10, 64)
-		if err != nil || suffix <= 0 { return false }
-		if suffix > total { suffix = total }
+		if err != nil || suffix <= 0 {
+			return false
+		}
+		if suffix > total {
+			suffix = total
+		}
 		return start == total-suffix && end == total-1
 	}
 	reqStart, err := strconv.ParseInt(reqStartPart, 10, 64)
-	if err != nil || reqStart < 0 || reqStart >= total { return false }
-	expectedEnd := total-1
+	if err != nil || reqStart < 0 || reqStart >= total {
+		return false
+	}
+	expectedEnd := total - 1
 	if reqEndPart != "" {
 		reqEnd, err := strconv.ParseInt(reqEndPart, 10, 64)
-		if err != nil || reqEnd < reqStart { return false }
-		if reqEnd < expectedEnd { expectedEnd = reqEnd }
+		if err != nil || reqEnd < reqStart {
+			return false
+		}
+		if reqEnd < expectedEnd {
+			expectedEnd = reqEnd
+		}
 	}
 	return start == reqStart && end == expectedEnd
 }

@@ -99,3 +99,34 @@ func TestGatewayRejectsAmbiguousIfRangeBeforePeer(t *testing.T) {
 		})
 	}
 }
+
+// An If-Range validator without a Range is ambiguous and must not reach a peer.
+func TestGatewayRejectsOrphanIfRangeBeforePeer(t *testing.T) {
+	var calls atomic.Int64
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls.Add(1); w.WriteHeader(http.StatusOK) }))
+	defer peer.Close()
+	store, err := catalog.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, err := store.Upsert("orphan-validator", peer.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := New(store, map[string]string{host.ID: "test-token"}, nil)
+	path := "/api/v1/hosts/" + host.ID + "/shares/docs/download?path=test.bin"
+	for _, values := range [][]string{{"\"v1\""}, {""}, {"\"v1\"", "\"v2\""}} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		for _, v := range values {
+			req.Header.Add("If-Range", v)
+		}
+		recorder := httptest.NewRecorder()
+		api.ServeHTTP(recorder, req)
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("values=%q status=%d body=%s", values, recorder.Code, recorder.Body.String())
+		}
+		if calls.Load() != 0 {
+			t.Fatalf("peer contacted %d times", calls.Load())
+		}
+	}
+}

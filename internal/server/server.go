@@ -324,7 +324,7 @@ func validSingleRangeResponse(requested, returned string, length int64) bool {
 	}
 	if reqStartPart == "" {
 		suffix, err := strconv.ParseInt(reqEndPart, 10, 64)
-		if err != nil || suffix <= 0 {
+		if !decimalDigits(reqEndPart) || err != nil || suffix <= 0 {
 			return false
 		}
 		if suffix > total {
@@ -333,13 +333,13 @@ func validSingleRangeResponse(requested, returned string, length int64) bool {
 		return start == total-suffix && end == total-1
 	}
 	reqStart, err := strconv.ParseInt(reqStartPart, 10, 64)
-	if err != nil || reqStart < 0 || reqStart >= total {
+	if !decimalDigits(reqStartPart) || err != nil || reqStart < 0 || reqStart >= total {
 		return false
 	}
 	expectedEnd := total - 1
 	if reqEndPart != "" {
 		reqEnd, err := strconv.ParseInt(reqEndPart, 10, 64)
-		if err != nil || reqEnd < reqStart {
+		if !decimalDigits(reqEndPart) || err != nil || reqEnd < reqStart {
 			return false
 		}
 		if reqEnd < expectedEnd {

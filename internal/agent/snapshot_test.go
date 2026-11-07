@@ -97,6 +97,20 @@ func TestSnapshotCaptureCapacityFailsClosed(t *testing.T) {
 			<-snapshotSlots
 		}
 	}()
+	// Invalid and ungranted requests must not consume scarce capture slots.
+	// These responses remain stable even when all capture slots are occupied.
+	invalid := request(h, "GET", "/v1/snapshot?share=docs", testToken)
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatalf("missing path under saturation: %d", invalid.Code)
+	}
+	denied := request(h, "GET", "/v1/snapshot?share=ungranted&path=sample.txt", testToken)
+	if denied.Code != http.StatusNotFound {
+		t.Fatalf("ungranted share under saturation: %d", denied.Code)
+	}
+	missing := request(h, "GET", "/v1/snapshot?share=docs&path=absent.txt", testToken)
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("missing file under saturation: %d", missing.Code)
+	}
 	w := snapshotRequest(h, "", "")
 	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("capacity response %d", w.Code)

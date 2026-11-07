@@ -48,7 +48,7 @@ type Export struct {
 // Existing NewHandler remains available for single-token, all-share mode.
 type AccessGrant struct {
 	BearerToken string
-	ShareIDs []string
+	ShareIDs    []string
 }
 
 // Share is safe to return to a remote peer; no machine-local path is included.
@@ -94,7 +94,9 @@ type grantContextKey struct{}
 // Its caller owns the returned Handler and must call Close on shutdown.
 func NewHandler(exports []Export, bearerToken string) (*Handler, error) {
 	ids := make([]string, 0, len(exports))
-	for _, e := range exports { ids = append(ids, e.ID) }
+	for _, e := range exports {
+		ids = append(ids, e.ID)
+	}
 	return newHandler(exports, []AccessGrant{{BearerToken: bearerToken, ShareIDs: ids}}, true)
 }
 
@@ -164,7 +166,7 @@ func newHandler(exports []Export, grants []AccessGrant, legacyEmptyShares bool) 
 			}
 			allowed[id] = struct{}{}
 		}
-		s.grants = append(s.grants, preparedGrant{digest: digest, shares:allowed})
+		s.grants = append(s.grants, preparedGrant{digest: digest, shares: allowed})
 	}
 
 	s.mux = http.NewServeMux()
@@ -172,21 +174,22 @@ func newHandler(exports []Export, grants []AccessGrant, legacyEmptyShares bool) 
 	s.mux.HandleFunc("GET /v1/list", s.list)
 	s.mux.HandleFunc("GET /v1/search", s.search)
 	s.mux.HandleFunc("GET /v1/download", s.download)
+	s.mux.HandleFunc("GET /v1/snapshot", s.snapshotDownload)
 	return s, nil
 }
 
 // ServeHTTP authenticates a token and enforces its share scope on metadata and
 // bytes alike. A valid token by itself cannot address a share outside its grant.
 func (s *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		allowed, authorized := s.authorized(r)
-		if !authorized {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="MasterDrive Agent"`)
-			writeError(w, http.StatusUnauthorized, "unauthorized")
-			return
-		}
-		s.mux.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), grantContextKey{}, allowed)))
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	allowed, authorized := s.authorized(r)
+	if !authorized {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="MasterDrive Agent"`)
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	s.mux.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), grantContextKey{}, allowed)))
 }
 
 // Close releases pinned roots. Shutdown the HTTP server before calling Close.

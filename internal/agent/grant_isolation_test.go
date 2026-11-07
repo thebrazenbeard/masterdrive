@@ -10,8 +10,8 @@ import (
 
 func TestScopedGrantsCannotCrossShareBoundaries(t *testing.T) {
 	a, b := t.TempDir(), t.TempDir()
-	for _, p := range []string{a, b} {
-		if err := os.WriteFile(filepath.Join(p, "secret.txt"), []byte("distinct-private-content"), 0600); err != nil {
+	for _, fixture := range []struct{ path, contents string }{{a, "alpha-only-content"}, {b, "beta-only-content"}} {
+		if err := os.WriteFile(filepath.Join(fixture.path, "secret.txt"), []byte(fixture.contents), 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -33,7 +33,7 @@ func TestScopedGrantsCannotCrossShareBoundaries(t *testing.T) {
 			if w.Header().Get("Cache-Control") != "no-store" {
 				t.Fatal("missing no-store")
 			}
-			if strings.Contains(w.Body.String(), "Beta") || strings.Contains(w.Body.String(), "distinct-private-content") || strings.Contains(w.Body.String(), b) {
+			if strings.Contains(w.Body.String(), "Beta") || strings.Contains(w.Body.String(), "beta-only-content") || strings.Contains(w.Body.String(), b) {
 				t.Fatalf("cross-grant disclosure: %s", w.Body.String())
 			}
 			if route == "/v1/shares" {
@@ -45,7 +45,10 @@ func TestScopedGrantsCannotCrossShareBoundaries(t *testing.T) {
 			}
 		})
 	}
-	if w := request(h, http.MethodGet, "/v1/download?share=b&path=secret.txt", tokenB); w.Code != http.StatusOK {
-		t.Fatalf("valid grant denied: %d %s", w.Code, w.Body.String())
+	for _, tc := range []struct{ token, share, expected string }{{tokenA, "a", "alpha-only-content"}, {tokenB, "b", "beta-only-content"}} {
+		w := request(h, http.MethodGet, "/v1/download?share="+tc.share+"&path=secret.txt", tc.token)
+		if w.Code != http.StatusOK || w.Body.String() != tc.expected {
+			t.Fatalf("valid grant returned incorrect bytes: share=%s status=%d body=%q", tc.share, w.Code, w.Body.String())
+		}
 	}
 }

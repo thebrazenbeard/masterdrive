@@ -40,8 +40,8 @@ func TestScopedGrantsCannotCrossShareBoundaries(t *testing.T) {
 				if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Alpha") {
 					t.Fatalf("own share hidden: %d %s", w.Code, w.Body.String())
 				}
-			} else if w.Code == http.StatusOK {
-				t.Fatalf("cross-grant route succeeded: %s", route)
+			} else if w.Code != http.StatusNotFound {
+				t.Fatalf("cross-grant route must return 404: %s got %d body %s", route, w.Code, w.Body.String())
 			}
 		})
 	}

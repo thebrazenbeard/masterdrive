@@ -15,9 +15,18 @@ import (
 // SnapshotLimit bounds per-request memory use. This is not a persistent snapshot lease.
 const SnapshotLimit int64 = 8 << 20
 
+var snapshotSlots = make(chan struct{}, 4)
+
 // snapshotDownload captures a bounded representation before serving any response bytes.
 // The digest identifies captured bytes, not an atomic filesystem version.
 func (s *Handler) snapshotDownload(w http.ResponseWriter, r *http.Request) {
+	select {
+	case snapshotSlots <- struct{}{}:
+		defer func() { <-snapshotSlots }()
+	default:
+		writeError(w, http.StatusServiceUnavailable, "snapshot capture capacity exceeded")
+		return
+	}
 	if r.URL.Query().Get("path") == "" || r.URL.Query().Get("path") == "." {
 		writeError(w, http.StatusBadRequest, "file path required")
 		return

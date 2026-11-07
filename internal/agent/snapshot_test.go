@@ -82,3 +82,26 @@ func TestSnapshotRejectsOversizeAndUnauthorized(t *testing.T) {
 		t.Fatalf("unauthorized %d", w.Code)
 	}
 }
+
+func TestSnapshotCaptureCapacityFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "sample.txt"), []byte("AAAABBBB"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	h := testHandler(t, []Export{{ID: "docs", Name: "Docs", Path: dir}})
+	for i := 0; i < cap(snapshotSlots); i++ {
+		snapshotSlots <- struct{}{}
+	}
+	defer func() {
+		for i := 0; i < cap(snapshotSlots); i++ {
+			<-snapshotSlots
+		}
+	}()
+	w := snapshotRequest(h, "", "")
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("capacity response %d", w.Code)
+	}
+	if w.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("missing no-store")
+	}
+}

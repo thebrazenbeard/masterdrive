@@ -58,6 +58,32 @@ func TestSnapshotOpenBudgetReleasesOnEarlyReturns(t *testing.T) {
         })
     }
 
+    // Representation precondition and range failures happen after capture.
+    // They must release both budgets, not just early filesystem failures.
+    for _, tc := range []struct {
+        name string
+        rangeHeader string
+        match string
+        want int
+    }{
+        {"stale-version", "bytes=0-2", "\\\"stale\\\"", http.StatusPreconditionFailed},
+        {"unversioned-range", "bytes=0-2", "", http.StatusPreconditionFailed},
+        {"unsatisfiable-range", "bytes=999-1000", "", http.StatusPreconditionFailed},
+    } {
+        t.Run(tc.name, func(t *testing.T) {
+            w := snapshotRequest(h, tc.rangeHeader, tc.match)
+            if w.Code != tc.want {
+                t.Fatalf("status = %d, want %d", w.Code, tc.want)
+            }
+            if got := len(snapshotOpenSlots); got != 0 {
+                t.Fatalf("leaked open-admission tokens: %d", got)
+            }
+            if got := len(snapshotSlots); got != 0 {
+                t.Fatalf("leaked capture-admission tokens: %d", got)
+            }
+        })
+    }
+
     // Saturating capture admission forces the post-open rejection path.
     for i := 0; i < cap(snapshotSlots); i++ {
         snapshotSlots <- struct{}{}

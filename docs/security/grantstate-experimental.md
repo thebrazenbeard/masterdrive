@@ -17,3 +17,20 @@ Evidence scope: source and Windows Go tests only. This package is deliberately *
 `go test -count=1 ./internal/grantstate`; `go test -count=1 ./...`; `go vet ./...`. The tests cover pending denial, approval, identity/share mismatch, stale epoch, expiry, unavailability, revocation and non-reuse, and concurrent revocation. They do **not** cover persistent crash recovery, Windows reparse paths, Linux symlinks, cryptographic pairing, or mount behavior.
 
 Design context: draft PR #33 `docs/security/pairing-revocation-authority-contract.md`. This implementation is an independently based mainline experiment, not a claim that PR #33 was merged.
+
+## In-process clock rollback latch (experimental)
+
+The grant state machine now observes wall-clock time under its store mutex and
+latches an unavailable state if a subsequent observation goes backwards. This
+prevents a previously expired grant from becoming eligible again within that
+process following an observed clock rollback. A later clock correction does not
+clear the latch. The regression TestClockRollbackPoisonsGrantAuthority
+exercises both denial and persistence of the latch.
+
+This is deliberately conservative: legitimate NTP/manual clock corrections can
+disable this experimental authority until process replacement. It is NOT
+a trusted time source, does not survive restart, does not prove an attacker
+cannot roll back the clock before observation, and does not protect persisted
+grant state. It must not be used to authorize real shares or mounts. Production
+design still requires authenticated owner consent, durable monotonic authority,
+peer identity binding, version-pinned source reads, and crash/restart testing.

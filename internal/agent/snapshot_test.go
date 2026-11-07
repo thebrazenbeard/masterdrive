@@ -105,3 +105,25 @@ func TestSnapshotCaptureCapacityFailsClosed(t *testing.T) {
 		t.Fatal("missing no-store")
 	}
 }
+
+// Duplicate conditional headers must fail before any representation is returned.
+func TestSnapshotRejectsDuplicateConditionalHeaders(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "sample.txt"), []byte("AAAABBBB"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	h := testHandler(t, []Export{{ID: "docs", Name: "Docs", Path: dir}})
+	for _, header := range []string{"Range", "If-Match", "If-Range"} {
+		t.Run(header, func(t *testing.T) {
+			r := httptest.NewRequest("GET", "/v1/snapshot?share=docs&path=sample.txt", nil)
+			r.Header.Set("Authorization", "Bearer "+testToken)
+			r.Header.Add(header, "bytes=0-3")
+			r.Header.Add(header, "bytes=4-7")
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if w.Code != http.StatusBadRequest || strings.Contains(w.Body.String(), "AAAABBBB") {
+				t.Fatalf("duplicate %s: status %d body %q", header, w.Code, w.Body.String())
+			}
+		})
+	}
+}

@@ -20,13 +20,6 @@ var snapshotSlots = make(chan struct{}, 4)
 // snapshotDownload captures a bounded representation before serving any response bytes.
 // The digest identifies captured bytes, not an atomic filesystem version.
 func (s *Handler) snapshotDownload(w http.ResponseWriter, r *http.Request) {
-	select {
-	case snapshotSlots <- struct{}{}:
-		defer func() { <-snapshotSlots }()
-	default:
-		writeError(w, http.StatusServiceUnavailable, "snapshot capture capacity exceeded")
-		return
-	}
 	if r.URL.Query().Get("path") == "" || r.URL.Query().Get("path") == "." {
 		writeError(w, http.StatusBadRequest, "file path required")
 		return
@@ -43,6 +36,13 @@ func (s *Handler) snapshotDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	if info.Size() > SnapshotLimit {
 		writeError(w, http.StatusRequestEntityTooLarge, "snapshot limit exceeded")
+		return
+	}
+	select {
+	case snapshotSlots <- struct{}{}:
+		defer func() { <-snapshotSlots }()
+	default:
+		writeError(w, http.StatusServiceUnavailable, "snapshot capture capacity exceeded")
 		return
 	}
 	data, err := io.ReadAll(io.LimitReader(f, SnapshotLimit+1))

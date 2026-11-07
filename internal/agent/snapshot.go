@@ -15,7 +15,10 @@ import (
 // SnapshotLimit bounds per-request memory use. This is not a persistent snapshot lease.
 const SnapshotLimit int64 = 8 << 20
 
-// snapshotOpenSlots bounds concurrent filesystem handles, including requests\n// rejected by the separate capture-memory budget. It is process-wide.\nvar snapshotOpenSlots = make(chan struct{}, 8)\nvar snapshotSlots = make(chan struct{}, 4)
+// snapshotOpenSlots bounds concurrent filesystem handles, including requests
+// rejected by the separate capture-memory budget. It is process-wide.
+var snapshotOpenSlots = make(chan struct{}, 8)
+var snapshotSlots = make(chan struct{}, 4)
 
 // snapshotDownload captures a bounded representation before serving any response bytes.
 // The digest identifies captured bytes, not an atomic filesystem version.
@@ -24,7 +27,16 @@ func (s *Handler) snapshotDownload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "file path required")
 		return
 	}
-	// Bound open handles even when all capture slots are busy. This is a\n	// nonblocking admission limit; invalid scoped requests still fail closed.\n	select {\n	case snapshotOpenSlots <- struct{}{}:\n		defer func() { <-snapshotOpenSlots }()\n	default:\n		writeError(w, http.StatusServiceUnavailable, "snapshot open capacity exceeded")\n		return\n	}\n	f, _, p, ok := s.open(w, r)
+	// Bound open handles even when all capture slots are busy. This is a
+	// nonblocking admission limit; invalid scoped requests still fail closed.
+	select {
+	case snapshotOpenSlots <- struct{}{}:
+		defer func() { <-snapshotOpenSlots }()
+	default:
+		writeError(w, http.StatusServiceUnavailable, "snapshot open capacity exceeded")
+		return
+	}
+	f, _, p, ok := s.open(w, r)
 	if !ok {
 		return
 	}

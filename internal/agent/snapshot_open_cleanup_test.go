@@ -66,7 +66,7 @@ func TestSnapshotOpenBudgetReleasesOnEarlyReturns(t *testing.T) {
         match string
         want int
     }{
-        {"stale-version", "bytes=0-2", "\\\"stale\\\"", http.StatusPreconditionFailed},
+        {"stale-version", "bytes=0-2", "\"stale\"", http.StatusPreconditionFailed},
         {"unversioned-range", "bytes=0-2", "", http.StatusPreconditionFailed},
         {"unsatisfiable-range", "bytes=999-1000", "", http.StatusPreconditionFailed},
     } {

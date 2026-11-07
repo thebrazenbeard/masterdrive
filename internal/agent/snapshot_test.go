@@ -119,3 +119,28 @@ func TestSnapshotCaptureCapacityFailsClosed(t *testing.T) {
 		t.Fatal("missing no-store")
 	}
 }
+
+func TestSnapshotOpenBudgetFailsClosedAndReleases(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "sample.txt"), []byte("AAAABBBB"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	h := testHandler(t, []Export{{ID: "docs", Name: "Docs", Path: dir}})
+	for i := 0; i < cap(snapshotOpenSlots); i++ {
+		snapshotOpenSlots <- struct{}{}
+	}
+	w := snapshotRequest(h, "", "")
+	if w.Code != http.StatusServiceUnavailable || w.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("open saturation: %d", w.Code)
+	}
+	for i := 0; i < cap(snapshotOpenSlots); i++ {
+		<-snapshotOpenSlots
+	}
+	w = snapshotRequest(h, "", "")
+	if w.Code != http.StatusOK || w.Body.String() != "AAAABBBB" {
+		t.Fatalf("after open capacity release: %d %q", w.Code, w.Body.String())
+	}
+	if len(snapshotOpenSlots) != 0 {
+		t.Fatalf("leaked open admission slots: %d", len(snapshotOpenSlots))
+	}
+}

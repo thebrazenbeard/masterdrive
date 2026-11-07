@@ -20,6 +20,14 @@ var snapshotSlots = make(chan struct{}, 4)
 // snapshotDownload captures a bounded representation before serving any response bytes.
 // The digest identifies captured bytes, not an atomic filesystem version.
 func (s *Handler) snapshotDownload(w http.ResponseWriter, r *http.Request) {
+	// Ambiguous conditional headers must not be collapsed by Header.Get.
+	// In particular, duplicate Range values could cause an unpinned full response.
+	for _, name := range []string{"Range", "If-Match", "If-Range"} {
+		if len(r.Header.Values(name)) > 1 {
+			writeError(w, http.StatusBadRequest, "ambiguous snapshot precondition")
+			return
+		}
+	}
 	select {
 	case snapshotSlots <- struct{}{}:
 		defer func() { <-snapshotSlots }()

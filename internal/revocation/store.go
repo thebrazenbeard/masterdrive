@@ -15,7 +15,7 @@ import (
 // Store owns a directory of one-way token-digest tombstones. Never put this
 // directory on a shared or untrusted filesystem. Back up its contents before
 // migration; losing the directory loses the revocation history.
-type Store struct { dir string }
+type Store struct { dir string; identity os.FileInfo }
 
 // Open requires an existing, owner-provisioned directory. It deliberately
 // does not silently create an empty store when a directory is missing.
@@ -24,7 +24,7 @@ func Open(dir string) (*Store, error) {
     info, err := os.Lstat(dir)
     if err != nil { return nil, fmt.Errorf("revocation: cannot inspect store: %w", err) }
     if !info.IsDir() { return nil, errors.New("revocation: store must be a real directory") }
-    return &Store{dir:dir}, nil
+    return &Store{dir:dir, identity:info}, nil
 }
 
 func (s *Store) filename(token string) (string,error) {
@@ -55,7 +55,7 @@ func (s *Store) Revoke(token string) error {
 func (s *Store) ensureDirectory() error {
     info,err:=os.Lstat(s.dir)
     if err!=nil{return fmt.Errorf("revocation: inspect directory: %w",err)}
-    if !info.IsDir(){return errors.New("revocation: directory unavailable or replaced")}
+    if !info.IsDir() || !os.SameFile(s.identity, info) {return errors.New("revocation: directory unavailable or replaced")}
     return nil
 }
 

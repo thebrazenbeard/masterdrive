@@ -25,20 +25,47 @@ type Pin struct {
 func Check(status int, header http.Header, pin Pin, start, end, received int64) error {
  if pin.Total <= 0 || start < 0 || end < start || end >= pin.Total ||
   received != end-start+1 || status != http.StatusPartialContent ||
-  !strongETag(pin.ETag) || header.Get("ETag") != pin.ETag ||
-  header.Get("Content-Encoding") != "" ||
-  header.Get("Transfer-Encoding") != "" ||
-  header.Get("Content-Range") != fmt.Sprintf("bytes %d-%d/%d",start,end,pin.Total) {
+  !strongETag(pin.ETag) {
   return ErrMismatch
  }
- if ct := strings.ToLower(header.Get("Content-Type")); strings.HasPrefix(strings.TrimSpace(ct),"multipart/") {
+ etag, ok := singleHeader(header, "ETag")
+ if !ok || etag != pin.ETag { return ErrMismatch }
+ cr, ok := singleHeader(header, "Content-Range")
+ if !ok || cr != fmt.Sprintf("bytes %d-%d/%d",start,end,pin.Total) { return ErrMismatch }
+ length, ok := singleHeader(header, "Content-Length")
+ if !ok { return ErrMismatch }
+ n,err := strconv.ParseInt(length,10,64)
+ if err != nil || n != received || length != strconv.FormatInt(n,10) { return ErrMismatch }
+ // Reject even empty-valued or duplicated encoding/transfer metadata.
+ if hasHeader(header,"Content-Encoding") || hasHeader(header,"Transfer-Encoding") { return ErrMismatch }
+ if ct, present := singleHeader(header,"Content-Type"); !present {
+  if hasHeader(header,"Content-Type") { return ErrMismatch }
+ } else if strings.HasPrefix(strings.ToLower(strings.TrimSpace(ct)),"multipart/") {
   return ErrMismatch
  }
- values, present := header["Content-Length"]
- if !present || len(values) != 1 { return ErrMismatch }
- n,err := strconv.ParseInt(values[0],10,64)
- if err != nil || n != received || values[0] != strconv.FormatInt(n,10) { return ErrMismatch }
  return nil
+}
+
+// Use EqualFold because http.Header is a map and callers can construct
+// noncanonical keys. Duplicate fields (including differently cased keys)
+// are ambiguous and must not be silently reduced to the first value.
+func singleHeader(h http.Header, name string) (string, bool) {
+ var value string
+ count := 0
+ for key, values := range h {
+  if strings.EqualFold(key,name) {
+   count += len(values)
+   if len(values) == 1 { value = values[0] }
+  }
+ }
+ return value, count == 1
+}
+
+func hasHeader(h http.Header, name string) bool {
+ for key := range h {
+  if strings.EqualFold(key,name) { return true }
+ }
+ return false
 }
 
 func strongETag(s string) bool {

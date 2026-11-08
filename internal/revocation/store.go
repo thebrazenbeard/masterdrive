@@ -41,6 +41,9 @@ func Open(dir string) (*Store, error) {
         if writeErr != nil { return nil, writeErr }
         if closeErr != nil { return nil, closeErr }
     } else if errors.Is(createErr, os.ErrExist) {
+        markerInfo, err := os.Lstat(markerPath)
+        if err != nil { return nil, err }
+        if !markerInfo.Mode().IsRegular() { return nil, errors.New("revocation: store identity must be a regular file") }
         b, err := os.ReadFile(markerPath)
         if err != nil { return nil, err }
         marker = string(b)
@@ -80,7 +83,10 @@ func (s *Store) ensureDirectory() error {
     info,err:=os.Lstat(s.dir)
     if err!=nil{return fmt.Errorf("revocation: inspect directory: %w",err)}
     if !info.IsDir() || !os.SameFile(s.identity, info) {return errors.New("revocation: directory unavailable or replaced")}
-    b, err := os.ReadFile(filepath.Join(s.dir, ".store-identity"))
+    markerPath := filepath.Join(s.dir, ".store-identity")
+    markerInfo, err := os.Lstat(markerPath)
+    if err != nil || !markerInfo.Mode().IsRegular() { return errors.New("revocation: store identity is not a regular file") }
+    b, err := os.ReadFile(markerPath)
     if err != nil || string(b) != s.marker+"\n" { return errors.New("revocation: store identity missing or replaced") }
     return nil
 }

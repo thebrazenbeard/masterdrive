@@ -55,3 +55,36 @@ func NewClient() *http.Client {
   },
  }
 }
+
+
+// authorizedRoundTripper enforces destination admission even when callers
+// construct requests without NewRequest or mutate a request before Do.
+type authorizedRoundTripper struct {
+ authority string
+ base http.RoundTripper
+}
+
+func (t authorizedRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+ if req == nil || req.URL == nil || req.Method != http.MethodGet ||
+  req.Host != req.URL.Host || req.URL.Host != t.authority ||
+  req.Body != nil || req.GetBody != nil {
+  return nil, ErrEndpoint
+ }
+ if _, err := NewRequest(req.Context(), req.URL.String(), t.authority); err != nil {
+  return nil, ErrEndpoint
+ }
+ return t.base.RoundTrip(req)
+}
+
+// NewAuthorizedClient binds the HTTPS destination at the transport boundary.
+// This prevents bypassing NewRequest through client.Do or client.Get.
+// Authority is an operator-pinned exact host[:port], not peer-provided data.
+// It does not establish source grants, Tailscale identity, or immutable bytes.
+func NewAuthorizedClient(authority string) (*http.Client, error) {
+ if authority == "" { return nil, ErrEndpoint }
+ probe, err := NewRequest(context.Background(), "https://"+authority+"/", authority)
+ if err != nil || probe.URL.Host != authority { return nil, ErrEndpoint }
+ c := NewClient()
+ c.Transport = authorizedRoundTripper{authority: authority, base: c.Transport}
+ return c, nil
+}

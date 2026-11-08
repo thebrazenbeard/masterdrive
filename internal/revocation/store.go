@@ -29,6 +29,17 @@ func Open(dir string) (*Store, error) {
     // identity values are reused (observed on Windows CI). This is NOT a
     // rollback-resistant or authenticated checkpoint.
     markerPath := filepath.Join(dir, ".store-identity")
+    // A missing marker in a populated directory is ambiguous: it may be a
+    // damaged or tampered existing ledger. Never silently re-bootstrap it.
+    // This is only a corruption guard, not atomic initialization or rollback
+    // protection; hostile concurrent filesystem writers remain out of scope.
+    if _, err := os.Lstat(markerPath); errors.Is(err, os.ErrNotExist) {
+        entries, readErr := os.ReadDir(dir)
+        if readErr != nil { return nil, fmt.Errorf("revocation: inspect bootstrap directory: %w", readErr) }
+        if len(entries) != 0 { return nil, errors.New("revocation: missing identity in nonempty store") }
+    } else if err != nil {
+        return nil, fmt.Errorf("revocation: inspect identity: %w", err)
+    }
     var marker string
     file, createErr := os.OpenFile(markerPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
     if createErr == nil {

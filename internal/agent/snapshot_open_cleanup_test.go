@@ -58,6 +58,35 @@ func TestSnapshotOpenBudgetReleasesOnEarlyReturns(t *testing.T) {
         })
     }
 
+    // Obtain the exact representation ETag before testing range parsing.
+    // Without If-Match, the handler returns 412 before reaching ServeContent.
+    initial := snapshotRequest(h, "", "")
+    if initial.Code != http.StatusOK {
+        t.Fatalf("initial snapshot status = %d", initial.Code)
+    }
+    etag := initial.Header().Get("ETag")
+    if etag == "" {
+        t.Fatal("initial snapshot missing ETag")
+    }
+    if got := len(snapshotOpenSlots); got != 0 {
+        t.Fatalf("open-admission token leaked after initial snapshot: %d", got)
+    }
+    if got := len(snapshotSlots); got != 0 {
+        t.Fatalf("capture-admission token leaked after initial snapshot: %d", got)
+    }
+    t.Run("unsatisfiable-range", func(t *testing.T) {
+        w := snapshotRequest(h, "bytes=999-1000", etag)
+        if w.Code != http.StatusRequestedRangeNotSatisfiable {
+            t.Fatalf("status = %d, want %d", w.Code, http.StatusRequestedRangeNotSatisfiable)
+        }
+        if got := len(snapshotOpenSlots); got != 0 {
+            t.Fatalf("leaked open-admission tokens: %d", got)
+        }
+        if got := len(snapshotSlots); got != 0 {
+            t.Fatalf("leaked capture-admission tokens: %d", got)
+        }
+    })
+
     // Representation precondition and range failures happen after capture.
     // They must release both budgets, not just early filesystem failures.
     for _, tc := range []struct {
@@ -68,7 +97,6 @@ func TestSnapshotOpenBudgetReleasesOnEarlyReturns(t *testing.T) {
     }{
         {"stale-version", "bytes=0-2", "\"stale\"", http.StatusPreconditionFailed},
         {"unversioned-range", "bytes=0-2", "", http.StatusPreconditionFailed},
-        {"unsatisfiable-range", "bytes=999-1000", "", http.StatusPreconditionFailed},
     } {
         t.Run(tc.name, func(t *testing.T) {
             w := snapshotRequest(h, tc.rangeHeader, tc.match)

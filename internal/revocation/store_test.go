@@ -26,6 +26,7 @@ func TestRevocationPersistsAcrossReopen(t *testing.T) {
 func TestMissingStoreFailsClosed(t *testing.T) {
     dir:=t.TempDir()
     s,err:=Open(dir);if err!=nil{t.Fatal(err)}
+    if err:=os.Remove(filepath.Join(dir, ".store-identity"));err!=nil{t.Fatal(err)}
     if err:=os.Remove(dir);err!=nil{t.Fatal(err)}
     revoked,err:=s.Check(strings.Repeat("x",40))
     if err==nil||!revoked{t.Fatalf("missing directory must deny: %v %v",revoked,err)}
@@ -58,6 +59,7 @@ func TestReplacedStoreDirectoryFailsClosed(t *testing.T) {
     dir:=filepath.Join(parent,"ledger")
     if err:=os.Mkdir(dir,0700);err!=nil{t.Fatal(err)}
     s,err:=Open(dir);if err!=nil{t.Fatal(err)}
+    if err:=os.Remove(filepath.Join(dir, ".store-identity"));err!=nil{t.Fatal(err)}
     if err:=os.Remove(dir);err!=nil{t.Fatal(err)}
     if err:=os.WriteFile(dir,[]byte("replacement"),0600);err!=nil{t.Fatal(err)}
     token:=strings.Repeat("d",48)

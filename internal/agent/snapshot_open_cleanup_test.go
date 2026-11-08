@@ -2,6 +2,7 @@ package agent
 
 import (
     "net/http"
+    "net/http/httptest"
     "os"
     "path/filepath"
     "testing"
@@ -84,6 +85,24 @@ func TestSnapshotOpenBudgetReleasesOnEarlyReturns(t *testing.T) {
         }
         if got := len(snapshotSlots); got != 0 {
             t.Fatalf("leaked capture-admission tokens: %d", got)
+        }
+    })
+
+    // If-Range must agree with the captured representation even when
+    // If-Match is valid; this path is distinct from stale If-Match.
+    t.Run("stale-if-range", func(t *testing.T) {
+        req := httptest.NewRequest(http.MethodGet, "/v1/snapshot?share=docs&path=sample.txt", nil)
+        req.Header.Set("Authorization", "Bearer "+testToken)
+        req.Header.Set("Range", "bytes=0-2")
+        req.Header.Set("If-Match", etag)
+        req.Header.Set("If-Range", "\"stale\"")
+        w := httptest.NewRecorder()
+        h.ServeHTTP(w, req)
+        if w.Code != http.StatusPreconditionFailed {
+            t.Fatalf("status = %d, want %d", w.Code, http.StatusPreconditionFailed)
+        }
+        if len(snapshotOpenSlots) != 0 || len(snapshotSlots) != 0 {
+            t.Fatalf("admission tokens leaked: open=%d capture=%d", len(snapshotOpenSlots), len(snapshotSlots))
         }
     })
 

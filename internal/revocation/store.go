@@ -5,6 +5,7 @@ package revocation
 
 import (
     "crypto/sha256"
+    "crypto/rand"
     "encoding/hex"
     "errors"
     "fmt"
@@ -15,7 +16,7 @@ import (
 // Store owns a directory of one-way token-digest tombstones. Never put this
 // directory on a shared or untrusted filesystem. Back up its contents before
 // migration; losing the directory loses the revocation history.
-type Store struct { dir string; identity os.FileInfo }
+type Store struct { dir string; identity os.FileInfo; marker string }
 
 // Open requires an existing, owner-provisioned directory. It deliberately
 // does not silently create an empty store when a directory is missing.
@@ -24,7 +25,30 @@ func Open(dir string) (*Store, error) {
     info, err := os.Lstat(dir)
     if err != nil { return nil, fmt.Errorf("revocation: cannot inspect store: %w", err) }
     if !info.IsDir() { return nil, errors.New("revocation: store must be a real directory") }
-    return &Store{dir:dir, identity:info}, nil
+    // The marker detects same-path directory replacement even where filesystem
+    // identity values are reused (observed on Windows CI). This is NOT a
+    // rollback-resistant or authenticated checkpoint.
+    markerPath := filepath.Join(dir, ".store-identity")
+    var marker string
+    file, createErr := os.OpenFile(markerPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+    if createErr == nil {
+        nonce := make([]byte, 32)
+        if _, err := rand.Read(nonce); err != nil { file.Close(); return nil, err }
+        marker = hex.EncodeToString(nonce)
+        _, writeErr := file.WriteString(marker + "\\n")
+        if writeErr == nil { writeErr = file.Sync() }
+        closeErr := file.Close()
+        if writeErr != nil { return nil, writeErr }
+        if closeErr != nil { return nil, closeErr }
+    } else if errors.Is(createErr, os.ErrExist) {
+        b, err := os.ReadFile(markerPath)
+        if err != nil { return nil, err }
+        marker = string(b)
+        if len(marker) != 65 || marker[64] != '\\n' { return nil, errors.New("revocation: invalid store identity") }
+        if _, err := hex.DecodeString(marker[:64]); err != nil { return nil, errors.New("revocation: corrupt store identity") }
+        marker = marker[:64]
+    } else { return nil, createErr }
+    return &Store{dir:dir, identity:info, marker:marker}, nil
 }
 
 func (s *Store) filename(token string) (string,error) {
@@ -56,6 +80,8 @@ func (s *Store) ensureDirectory() error {
     info,err:=os.Lstat(s.dir)
     if err!=nil{return fmt.Errorf("revocation: inspect directory: %w",err)}
     if !info.IsDir() || !os.SameFile(s.identity, info) {return errors.New("revocation: directory unavailable or replaced")}
+    b, err := os.ReadFile(filepath.Join(s.dir, ".store-identity"))
+    if err != nil || string(b) != s.marker+"\\n" { return errors.New("revocation: store identity missing or replaced") }
     return nil
 }
 

@@ -64,3 +64,19 @@ func TestReplacedStoreDirectoryFailsClosed(t *testing.T) {
     revoked,err:=s.Check(token)
     if !revoked||err==nil{t.Fatalf("replaced store must fail closed: %v %v",revoked,err)}
 }
+
+func TestRecreatedDirectoryAtSamePathFailsClosed(t *testing.T) {
+    parent := t.TempDir()
+    dir := filepath.Join(parent, "ledger")
+    moved := filepath.Join(parent, "old-ledger")
+    if err := os.Mkdir(dir, 0700); err != nil { t.Fatal(err) }
+    store, err := Open(dir); if err != nil { t.Fatal(err) }
+    if err := os.Rename(dir, moved); err != nil { t.Fatal(err) }
+    if err := os.Mkdir(dir, 0700); err != nil { t.Fatal(err) }
+    token := strings.Repeat("z", 48)
+    if err := store.Revoke(token); err == nil { t.Fatal("recreated empty directory accepted for revoke") }
+    revoked, err := store.Check(token)
+    if !revoked || err == nil { t.Fatalf("recreated directory must fail closed: %v %v", revoked, err) }
+    // A new Open cannot authenticate the replacement against an external
+    // trusted checkpoint. This is a regression guard, not rollback protection.
+}

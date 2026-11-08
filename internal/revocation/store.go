@@ -35,7 +35,7 @@ func Open(dir string) (*Store, error) {
         nonce := make([]byte, 32)
         if _, err := rand.Read(nonce); err != nil { file.Close(); return nil, err }
         marker = hex.EncodeToString(nonce)
-        _, writeErr := file.WriteString(marker + "\\n")
+        _, writeErr := file.WriteString(marker + "\n")
         if writeErr == nil { writeErr = file.Sync() }
         closeErr := file.Close()
         if writeErr != nil { return nil, writeErr }
@@ -44,7 +44,7 @@ func Open(dir string) (*Store, error) {
         b, err := os.ReadFile(markerPath)
         if err != nil { return nil, err }
         marker = string(b)
-        if len(marker) != 65 || marker[64] != '\\n' { return nil, errors.New("revocation: invalid store identity") }
+        if len(marker) != 65 || marker[64] != '\n' { return nil, errors.New("revocation: invalid store identity") }
         if _, err := hex.DecodeString(marker[:64]); err != nil { return nil, errors.New("revocation: corrupt store identity") }
         marker = marker[:64]
     } else { return nil, createErr }
@@ -81,7 +81,7 @@ func (s *Store) ensureDirectory() error {
     if err!=nil{return fmt.Errorf("revocation: inspect directory: %w",err)}
     if !info.IsDir() || !os.SameFile(s.identity, info) {return errors.New("revocation: directory unavailable or replaced")}
     b, err := os.ReadFile(filepath.Join(s.dir, ".store-identity"))
-    if err != nil || string(b) != s.marker+"\\n" { return errors.New("revocation: store identity missing or replaced") }
+    if err != nil || string(b) != s.marker+"\n" { return errors.New("revocation: store identity missing or replaced") }
     return nil
 }
 

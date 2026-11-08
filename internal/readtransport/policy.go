@@ -73,7 +73,16 @@ func (t authorizedRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
  if _, err := NewRequest(req.Context(), req.URL.String(), t.authority); err != nil {
   return nil, ErrEndpoint
  }
- return t.base.RoundTrip(req)
+ // A redirect response is never a usable read representation. Reject it at
+ // the transport boundary as well as disabling automatic redirect following.
+ resp, err := t.base.RoundTrip(req)
+ if err != nil { return resp, err }
+ if resp == nil { return nil, ErrEndpoint }
+ if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+  if resp.Body != nil { _ = resp.Body.Close() }
+  return nil, ErrEndpoint
+ }
+ return resp, nil
 }
 
 // NewAuthorizedClient binds the HTTPS destination at the transport boundary.

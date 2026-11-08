@@ -19,7 +19,8 @@ func TestRevocationPersistsAcrossReopen(t *testing.T) {
     other:=strings.Repeat("b",48)
     revoked,err=reopened.Check(other);if err!=nil||revoked{t.Fatalf("other token: %v %v",revoked,err)}
     entries,err:=os.ReadDir(dir);if err!=nil{t.Fatal(err)}
-    if len(entries)!=1||strings.Contains(entries[0].Name(),token){t.Fatalf("unexpected tombstone filenames: %v",entries)}
+    if len(entries)!=2 {t.Fatalf("expected identity marker and tombstone: %v",entries)}
+    for _,entry:=range entries {if strings.Contains(entry.Name(),token){t.Fatalf("token leaked in filename: %v",entry.Name())}}
 }
 
 func TestMissingStoreFailsClosed(t *testing.T) {

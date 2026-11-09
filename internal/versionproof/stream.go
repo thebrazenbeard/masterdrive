@@ -29,7 +29,9 @@ func VerifyStream(pin Pin, version string, reader io.Reader, maxBytes uint64) er
    _, _ = h.Write(buf[:n])
    remaining -= uint64(n)
   }
-  if err != nil {
+  // io.Reader permits returning data and io.EOF together. Consume the
+  // bytes first, but only accept terminal EOF at the exact pinned length.
+  if err != nil && !(err == io.EOF && remaining == 0) {
    return fmt.Errorf("%w: short or failed stream: %v", ErrInvalid, err)
   }
   if n == 0 { return fmt.Errorf("%w: reader made no progress", ErrInvalid) }

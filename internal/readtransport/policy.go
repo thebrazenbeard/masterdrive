@@ -86,7 +86,10 @@ func (t authorizedRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
  resp, err := t.base.RoundTrip(req)
  if err != nil { return resp, err }
  if resp == nil { return nil, ErrEndpoint }
- if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+ // Only full or partial representation responses may cross this boundary.
+ // Reject upgrades, informational, error, and cache-validation responses,
+ // closing their bodies so callers cannot accidentally treat them as bytes.
+ if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
   if resp.Body != nil { _ = resp.Body.Close() }
   return nil, ErrEndpoint
  }

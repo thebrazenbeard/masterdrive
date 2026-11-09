@@ -22,7 +22,7 @@ func NewRequest(ctx context.Context, rawURL, authorizedAuthority string) (*http.
  if ctx == nil || authorizedAuthority == "" { return nil, ErrEndpoint }
  u, err := url.Parse(rawURL)
  if err != nil || u == nil || u.Opaque != "" || u.User != nil || u.Fragment != "" ||
-  u.RawQuery != "" || !strings.EqualFold(u.Scheme, "https") ||
+  u.RawQuery != "" || u.ForceQuery || u.RawPath != "" || u.RawFragment != "" || !strings.EqualFold(u.Scheme, "https") ||
   u.Host == "" || u.Host != authorizedAuthority || u.Hostname() == "" ||
   strings.HasSuffix(u.Hostname(), ".") || u.Path == "" {
   return nil, ErrEndpoint

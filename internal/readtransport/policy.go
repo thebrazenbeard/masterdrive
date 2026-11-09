@@ -28,6 +28,14 @@ func NewRequest(ctx context.Context, rawURL, authorizedAuthority string) (*http.
   return nil, ErrEndpoint
  }
  if strings.ContainsAny(u.Host, "@\\") { return nil, ErrEndpoint }
+ // Reject dot segments and empty interior segments before HTTP routing or proxy rewriting.
+ // These can be normalized differently by clients, gateways, and origin handlers.
+ if strings.HasPrefix(u.Path, "//") || strings.Contains(u.Path, "//") {
+  return nil, ErrEndpoint
+ }
+ for _, segment := range strings.Split(u.Path, "/") {
+  if segment == "." || segment == ".." { return nil, ErrEndpoint }
+ }
  req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
  if err != nil { return nil, ErrEndpoint }
  return req, nil

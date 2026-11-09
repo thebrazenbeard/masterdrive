@@ -16,9 +16,23 @@ func VerifyStream(pin Pin, version string, reader io.Reader, maxBytes uint64) er
   return fmt.Errorf("%w: missing reader, version mismatch, or size exceeds limit", ErrInvalid)
  }
  h := sha256.New()
- n, err := io.CopyN(h, reader, int64(pin.Size))
- if err != nil || uint64(n) != pin.Size {
-  return fmt.Errorf("%w: short or failed stream: %v", ErrInvalid, err)
+ // io.CopyN may spin forever on a broken Reader returning (0, nil).
+ // Reject no-progress reads rather than treating them as transport liveness.
+ var buf [32 * 1024]byte
+ remaining := pin.Size
+ for remaining > 0 {
+  want := len(buf)
+  if remaining < uint64(want) { want = int(remaining) }
+  n, err := reader.Read(buf[:want])
+  if n < 0 || n > want { return fmt.Errorf("%w: invalid reader count", ErrInvalid) }
+  if n > 0 {
+   _, _ = h.Write(buf[:n])
+   remaining -= uint64(n)
+  }
+  if err != nil {
+   return fmt.Errorf("%w: short or failed stream: %v", ErrInvalid, err)
+  }
+  if n == 0 { return fmt.Errorf("%w: reader made no progress", ErrInvalid) }
  }
  var extra [1]byte
  nExtra, probeErr := reader.Read(extra[:])

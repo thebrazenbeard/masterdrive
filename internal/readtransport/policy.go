@@ -95,6 +95,9 @@ func (t authorizedRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
   if resp.Body != nil { _ = resp.Body.Close() }
   return nil, ErrEndpoint
  }
+ // A successful read representation must provide a body, even when empty.
+ // Reject malformed RoundTripper results before callers attempt bounded reads.
+ if resp.Body == nil { return nil, ErrEndpoint }
  return resp, nil
 }
 

@@ -14,3 +14,8 @@ This package is a **pure comparison helper**, not a durable revocation ledger or
 6. Require independent security review and exact-head Windows/Linux CI before integration or merge.
 
 A local attacker who can rewrite both the ledger and its alleged trusted checkpoint can pass this comparison. A matching checkpoint cannot prove an immutable file snapshot, safe mount, or running mesh. No host action or policy change is authorized by this document.
+
+
+## Canonical tombstone digest prototype (not full ledger qualification)
+
+`DigestRevocations(storeID, revision, entries)` hashes a domain-separated, length-prefixed big-endian encoding of store ID, revision, entry count, and sorted unique (tombstone ID, epoch) pairs. It rejects missing IDs, zero epochs, duplicate IDs, and invalid store/revision. Input order does not affect the result; deletion or alteration changes the digest. The helper does **not** sign the digest, authenticate provenance, persist a high-water mark, or include active grants and other ledger fields. Therefore it is **not yet the complete-ledger digest required for authorization**. The current schema is a deliberately isolated prototype; do not use its output as an authorization oracle. Before integration, define the complete source-owned ledger schema, canonicalize every security-relevant field, and test cross-version serialization and rollback.

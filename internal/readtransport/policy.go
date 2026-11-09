@@ -22,12 +22,22 @@ func NewRequest(ctx context.Context, rawURL, authorizedAuthority string) (*http.
  if ctx == nil || authorizedAuthority == "" { return nil, ErrEndpoint }
  u, err := url.Parse(rawURL)
  if err != nil || u == nil || u.Opaque != "" || u.User != nil || u.Fragment != "" ||
-  u.RawQuery != "" || !strings.EqualFold(u.Scheme, "https") ||
+  u.RawQuery != "" || u.ForceQuery || u.RawPath != "" || u.RawFragment != "" || !strings.EqualFold(u.Scheme, "https") ||
   u.Host == "" || u.Host != authorizedAuthority || u.Hostname() == "" ||
   strings.HasSuffix(u.Hostname(), ".") || u.Path == "" {
   return nil, ErrEndpoint
  }
  if strings.ContainsAny(u.Host, "@\\") { return nil, ErrEndpoint }
+ // Reject dot segments and empty interior segments before HTTP routing or proxy rewriting.
+ // These can be normalized differently by clients, gateways, and origin handlers.
+ if strings.HasPrefix(u.Path, "//") || strings.Contains(u.Path, "//") || strings.ContainsAny(u.Path, "\\;") {
+  return nil, ErrEndpoint
+ }
+ // Control characters can be interpreted inconsistently by gateways and OS paths.
+ for _, r := range u.Path { if r < 0x20 || r == 0x7f { return nil, ErrEndpoint } }
+ for _, segment := range strings.Split(u.Path, "/") {
+  if segment == "." || segment == ".." { return nil, ErrEndpoint }
+ }
  req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
  if err != nil { return nil, ErrEndpoint }
  return req, nil
@@ -78,10 +88,16 @@ func (t authorizedRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
  resp, err := t.base.RoundTrip(req)
  if err != nil { return resp, err }
  if resp == nil { return nil, ErrEndpoint }
- if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+ // Only full or partial representation responses may cross this boundary.
+ // Reject upgrades, informational, error, and cache-validation responses,
+ // closing their bodies so callers cannot accidentally treat them as bytes.
+ if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
   if resp.Body != nil { _ = resp.Body.Close() }
   return nil, ErrEndpoint
  }
+ // A successful read representation must provide a body, even when empty.
+ // Reject malformed RoundTripper results before callers attempt bounded reads.
+ if resp.Body == nil { return nil, ErrEndpoint }
  return resp, nil
 }
 

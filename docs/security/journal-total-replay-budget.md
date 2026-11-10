@@ -1,0 +1,5 @@
+# Aggregate journal replay budget (prototype)
+
+This change caps the journal file at 8 MiB before replay. It also repairs literal escaped newline text in the preceding source, which would otherwise prevent Go compilation. An oversized file fails closed before decoding or append; there is no truncation, compaction, or automatic lock breaking. The test constructs an oversized journal from small chunks and checks that read and commit reject it without changing file size.
+
+**Evidence boundary:** Source and regression test only until exact-head CI passes. `Stat` before replay is not an adversarial filesystem snapshot: a concurrently mutable file can change after the size check. The existing exclusive sidecar lock coordinates cooperative callers, not malicious writers. A maliciously replaced journal can roll back revocations; checksums are not authentication. Disk ownership, directory sync, lock crash recovery, cross-process behavior, and Windows/Linux power-loss durability remain unqualified. No authorization or mount integration is implied.

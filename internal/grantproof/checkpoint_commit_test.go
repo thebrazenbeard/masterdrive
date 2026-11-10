@@ -10,9 +10,10 @@ import (
 
 type fakeFloor struct { floor uint64; readErr, commitErr error; reads, commits int; last uint64 }
 func (f *fakeFloor) Floor(_,_,_ string)(uint64,error){ f.reads++;return f.floor,f.readErr }
-func (f *fakeFloor) CommitAtLeast(_,_,_ string,v uint64)error {
+func (f *fakeFloor) CommitIfNotSuperseded(_,_,_ string,v uint64)error {
  f.commits++;f.last=v
  if f.commitErr!=nil{return f.commitErr}
+ if f.floor>v{return ErrFloorUnavailable}
  if v>f.floor {f.floor=v}
  return nil
 }
@@ -43,6 +44,13 @@ func TestVerifyAndCommitCheckpoint(t *testing.T) {
  t.Run("floor read error",func(t *testing.T){
   f:=&fakeFloor{floor:11,readErr:errors.New("read failed")}
   if !errors.Is(run(f,cp,cs),ErrFloorUnavailable)||f.commits!=0{t.Fatal("accepted failed read")}
+ })
+ t.Run("concurrent floor advancement",func(t *testing.T){
+  f:=&fakeFloor{floor:11}
+  // Simulate a second writer advancing the durable floor after Floor().
+  // A real implementation must enforce this comparison atomically.
+  f.floor=13
+  if err:=f.CommitIfNotSuperseded("source","reader","share",12);err==nil{t.Fatal("accepted stale concurrent commit")}
  })
  t.Run("rollback",func(t *testing.T){
   f:=&fakeFloor{floor:13}

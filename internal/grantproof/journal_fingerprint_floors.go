@@ -105,4 +105,3 @@ func (j *JournalFingerprintFloors) CommitFingerprintIfCurrent(source,audience,sh
 }
 // Keep path selection with the caller; never automatically create parent dirs.
 var _ = filepath.Separator
-var _ = fmt.Sprintf

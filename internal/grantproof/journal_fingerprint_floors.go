@@ -41,9 +41,9 @@ func (j *JournalFingerprintFloors) locked(fn func(map[relationshipKey]fingerprin
  if err!=nil {return errors.Join(ErrFloorUnavailable,err)}
  defer f.Close()
  records:=map[relationshipKey]fingerprintRecord{}
- reader:=bufio.NewReader(f)
+ // Bound each record before JSON decoding: malformed journals must not allocate\n // arbitrarily large lines during replay. Valid records are far smaller.\n reader:=bufio.NewReaderSize(f,64*1024)
  for {
-  line,readErr:=reader.ReadString('\n')
+  lineBytes,readErr:=reader.ReadSlice('\n')\n  line:=string(lineBytes)
   if readErr==io.EOF && line=="" {break}
   if readErr!=nil || !strings.HasSuffix(line,"\n") {return ErrFloorUnavailable}
   var e journalEntry

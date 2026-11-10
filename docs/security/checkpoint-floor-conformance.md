@@ -1,0 +1,7 @@
+# Checkpoint floor conformance suite (source-only)
+
+The reusable `exerciseFingerprintFloorContract` in `internal/grantproof/checkpoint_floor_conformance_test.go` checks exact relationship namespaces (including concatenation collisions), unknown relationship rejection, atomic rejection of conflicting concurrent commits at one revision, stale-revision rejection, idempotent same-revision commits, and refusal to reset provisioned state.
+
+The in-memory reference store is the first fixture. A future Windows/Linux durable implementation MUST supply a fixture using a fresh disposable directory, and separately demonstrate crash/restart recovery, cross-process locking, write/rename/fsync barriers, permission-denial behavior, protection against external rollback, and authenticated provisioning. Passing this suite alone is insufficient for any real read or mount admission.
+
+Hostile counterexample: a backend can pass all these tests while keeping state only in RAM, then forget revocation after restart. Another backend can pass goroutine concurrency tests while losing updates between processes. Therefore this suite is a necessary but explicitly insufficient behavioral contract. No real drives, Tailscale settings, or host processes are involved.

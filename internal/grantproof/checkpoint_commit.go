@@ -6,12 +6,12 @@ import (
 )
 
 // CheckpointFloorStore is an injected authority boundary, not an implementation.
-// Floor must return an independently protected durable floor; CommitAtLeast must
-// durably and atomically persist max(existing, revision), never decrease it,
+// Floor must return an independently protected durable floor; CommitIfNotSuperseded must
+// durably and atomically reject a stored revision greater than the candidate and persist the candidate,
 // and return only after persistence. Errors must fail closed.
 type CheckpointFloorStore interface {
  Floor(sourceID, audienceID, shareID string) (uint64, error)
- CommitAtLeast(sourceID, audienceID, shareID string, revision uint64) error
+ CommitIfNotSuperseded(sourceID, audienceID, shareID string, revision uint64) error
 }
 
 var ErrFloorUnavailable = errors.New("grantproof: durable checkpoint floor unavailable")
@@ -27,6 +27,6 @@ func VerifyAndCommitCheckpoint(store CheckpointFloorStore, g Grant, grantSig []b
  floor, err := store.Floor(a.SourceID, a.AudienceID, a.ShareID)
  if err != nil || floor == 0 { return ErrFloorUnavailable }
  if err := VerifySignedCurrent(g, grantSig, trusted, c, checkpointSig, floor, maxAge, snapshot, now); err != nil { return err }
- if err := store.CommitAtLeast(a.SourceID, a.AudienceID, a.ShareID, c.Revision); err != nil { return ErrFloorUnavailable }
+ if err := store.CommitIfNotSuperseded(a.SourceID, a.AudienceID, a.ShareID, c.Revision); err != nil { return ErrFloorUnavailable }
  return nil
 }

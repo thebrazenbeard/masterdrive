@@ -33,6 +33,10 @@ func (e journalEntry) checksum() string {
 }
 func (j *JournalFingerprintFloors) locked(fn func(map[relationshipKey]fingerprintRecord) error) error {
  if j==nil || j.Path=="" { return ErrFloorUnavailable }
+ // Reject pre-existing symlink paths before any journal or lock open.
+ // This is defense in depth only: Lstat then OpenFile is NOT race-free.
+ if err:=rejectJournalSymlink(j.Path);err!=nil{return err}
+ if err:=rejectJournalSymlink(j.Path+".lock");err!=nil{return err}
  // Never remove an existing lock: it might belong to a live process.
  lock,err:=os.OpenFile(j.Path+".lock",os.O_CREATE|os.O_EXCL|os.O_WRONLY,0600)
  if err!=nil { return errors.Join(ErrFloorUnavailable,err) }
@@ -64,9 +68,19 @@ func (j *JournalFingerprintFloors) locked(fn func(map[relationshipKey]fingerprin
  }
  return fn(records)
 }
+// rejectJournalSymlink rejects a pre-existing symlink, while allowing a missing
+// path to be created. It is not a substitute for handle-relative secure opens.
+func rejectJournalSymlink(path string) error {
+ info,err:=os.Lstat(path)
+ if errors.Is(err,os.ErrNotExist){return nil}
+ if err!=nil{return errors.Join(ErrFloorUnavailable,err)}
+ if info.Mode()&os.ModeSymlink!=0{return ErrFloorUnavailable}
+ return nil
+}
 func (j *JournalFingerprintFloors) append(e journalEntry) error {
  e.Checksum=e.checksum()
  b,err:=json.Marshal(e);if err!=nil{return ErrFloorUnavailable}
+ if err:=rejectJournalSymlink(j.Path);err!=nil{return err}
  f,err:=os.OpenFile(j.Path,os.O_APPEND|os.O_WRONLY,0600)
  if err!=nil{return errors.Join(ErrFloorUnavailable,err)}
  defer f.Close()

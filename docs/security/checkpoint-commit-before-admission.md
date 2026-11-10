@@ -2,12 +2,12 @@
 
 `VerifyAndCommitCheckpoint` requires an injected `CheckpointFloorStore`.
 It rejects an absent or unprovisioned floor, verifies the source-signed
-checkpoint and grant against the floor, and requires `CommitAtLeast` to
+checkpoint and grant against the floor, and requires `CommitIfNotSuperseded` to
 succeed before returning nil. The floor must be provisioned through a
 separately authenticated process. It must never be supplied by the peer.
 
 **The interface is a contract, not a durable store.** Implementations must
-atomically and durably persist the maximum revision (including across
+atomically reject a revision superseded by a concurrent writer, and durably persist the candidate revision (including across
 crashes, competing processes, and power loss), never decrease it, and
 bind its namespace to independently paired identities. A store that
 acknowledges writes before fsync or that can be rolled back by restoring

@@ -11,7 +11,6 @@ import (
  "os"
  "path/filepath"
  "strings"
- "fmt"
 )
 
 // JournalFingerprintFloors is a fail-closed filesystem prototype, NOT a
@@ -72,6 +71,11 @@ func (j *JournalFingerprintFloors) append(e journalEntry) error {
  if err!=nil{return errors.Join(ErrFloorUnavailable,err)}
  defer f.Close()
  b=append(b,'\n')
+ // Enforce the aggregate limit on append as well as replay. The caller
+ // holds the exclusive cooperative journal lock for this operation.
+ const maxJournalBytes int64 = 8 << 20
+ info,err:=f.Stat()
+ if err!=nil || info.Size()>maxJournalBytes || int64(len(b))>maxJournalBytes-info.Size() {return ErrFloorUnavailable}
  n,err:=f.Write(b)
  if err!=nil || n!=len(b) {return ErrFloorUnavailable}
  if err=f.Sync();err!=nil{return errors.Join(ErrFloorUnavailable,err)}

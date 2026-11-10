@@ -11,6 +11,7 @@ import (
  "os"
  "path/filepath"
  "strings"
+ "fmt"
 )
 
 // JournalFingerprintFloors is a fail-closed filesystem prototype, NOT a
@@ -41,9 +42,14 @@ func (j *JournalFingerprintFloors) locked(fn func(map[relationshipKey]fingerprin
  if err!=nil {return errors.Join(ErrFloorUnavailable,err)}
  defer f.Close()
  records:=map[relationshipKey]fingerprintRecord{}
- // Bound each record before JSON decoding: malformed journals must not allocate\n // arbitrarily large lines during replay. Valid records are far smaller.\n reader:=bufio.NewReaderSize(f,64*1024)
+ // Bound both individual records and total replay work.
+ const maxJournalBytes int64 = 8 << 20
+ info,statErr:=f.Stat()
+ if statErr!=nil || info.Size()>maxJournalBytes {return ErrFloorUnavailable}
+ reader:=bufio.NewReaderSize(f,64*1024)
  for {
-  lineBytes,readErr:=reader.ReadSlice('\n')\n  line:=string(lineBytes)
+  lineBytes,readErr:=reader.ReadSlice('\n')
+  line:=string(lineBytes)
   if readErr==io.EOF && line=="" {break}
   if readErr!=nil || !strings.HasSuffix(line,"\n") {return ErrFloorUnavailable}
   var e journalEntry
@@ -99,3 +105,4 @@ func (j *JournalFingerprintFloors) CommitFingerprintIfCurrent(source,audience,sh
 }
 // Keep path selection with the caller; never automatically create parent dirs.
 var _ = filepath.Separator
+var _ = fmt.Sprintf

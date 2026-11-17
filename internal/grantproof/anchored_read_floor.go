@@ -20,6 +20,11 @@ type AnchoredReadFloor struct {
 }
 
 func (a *AnchoredReadFloor) FingerprintFloor(source, audience, share string) (uint64, [32]byte, error) {
+    // Reject malformed relationship identities before consulting either reader.
+    // Not every implementation of FingerprintFloorReader validates its inputs.
+    if _, ok := relationship(source, audience, share); !ok {
+        return 0, [32]byte{}, ErrFloorUnavailable
+    }
     if a == nil || a.Journal == nil || a.Authority == nil {
         return 0, [32]byte{}, ErrFloorUnavailable
     }
